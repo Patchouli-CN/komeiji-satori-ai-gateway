@@ -1,0 +1,166 @@
+# 覚のビルトインルール —— 内置规则，随包发布，始终加载
+#
+# 来源（2026-09 时点调研）：
+#   - llm-verify: github.com/mintesnot-teshome/llm-verify（中转商用系统提示词伪装模型的手法）
+#   - "I'm Spartacus" LLM 身份混淆测量: arxiv.org/abs/2411.10683
+#   - 蒸馏携带人设（Kimi 自称 Claude）: lesswrong.com/posts/Jc9YZEmqHgocAKiaH
+#   - Gemini 自称文心一言: hub.baai.ac.cn/view/33684
+#   - TokenAPI Scan 中转风险清单: github.com/TokenScanAI
+#
+# 厂商自报类规则只负责“抓出自我声明”，是否与上游宣称一致需人工/配置核对。
+# 用户可在 rules.toml 中用同名规则覆盖分数或改写模式。
+
+# ---------- 高危：伪装痕迹 ----------
+
+# 中转商惯用手法：给套壳模型塞 “You are Claude, made by Anthropic” 之类的
+# 系统提示词。这段话一旦在正文/CoT 里漏出，基本坐实伪装。
+[[rules]]
+name = "disguise-system-prompt-leak"
+field = "any"
+match = "regex"
+pattern = "(?i)You are (?:ChatGPT|Claude|Gemini|Grok|DeepSeek|Kimi|Qwen|an AI assistant)[,.]"
+score = 50
+description = "系统提示词泄漏：疑似中转商的伪装指令被模型复述"
+
+# 模型自述处于代理/中转之后（llm-verify 红旗项之一）
+[[rules]]
+name = "proxy-relay-disclosure"
+field = "any"
+match = "regex"
+pattern = "(?i)(?:behind|via|through) an? (?:API )?(?:proxy|relay|gateway)|第三方(?:中转|代理|转发)|(?:中转|代理)(?:API|服务|平台)"
+score = 25
+description = "模型提及自己处于代理/中转之后"
+
+# ---------- 厂商自报家门（抓到后核对宣称厂商） ----------
+
+[[rules]]
+name = "identity-openai"
+field = "any"
+match = "regex"
+pattern = "(?i)(?:trained|developed|created|built) by OpenAI|OpenAI(?:开发|训练|推出)|我是\\s*ChatGPT"
+score = 40
+description = "自称 OpenAI 系"
+
+[[rules]]
+name = "identity-anthropic"
+field = "any"
+match = "regex"
+pattern = "(?i)(?:trained|developed|created|built) by Anthropic|Anthropic(?:开发|训练|推出)|我(?:是|叫)\\s*Claude"
+score = 40
+description = "自称 Anthropic 系"
+
+[[rules]]
+name = "identity-google"
+field = "any"
+match = "regex"
+pattern = "(?i)(?:trained|developed|created|built) by Google|(?:谷歌|Google)(?:开发|训练|推出)|我(?:是|叫)\\s*Gemini"
+score = 40
+description = "自称 Google 系"
+
+[[rules]]
+name = "identity-deepseek"
+field = "any"
+match = "regex"
+pattern = "(?i)(?:trained|developed|created) by (?:DeepSeek|深度求索)|深度求索|我(?:是|叫)\\s*DeepSeek"
+score = 40
+description = "自称 DeepSeek 系"
+
+[[rules]]
+name = "identity-alibaba"
+field = "any"
+match = "regex"
+pattern = "(?i)通义千问|(?:trained|developed) by Alibaba|我(?:是|叫)\\s*Qwen"
+score = 40
+description = "自称阿里通义系"
+
+[[rules]]
+name = "identity-baidu"
+field = "any"
+match = "regex"
+pattern = "(?i)文心一言|ERNIE ?Bot|百度(?:开发|训练)"
+score = 40
+description = "自称百度文心系（Gemini 套壳事件同款信号）"
+
+[[rules]]
+name = "identity-moonshot"
+field = "any"
+match = "regex"
+pattern = "(?i)(?:trained|developed) by Moonshot|月之暗面|我(?:是|叫)\\s*Kimi"
+score = 40
+description = "自称月之暗面 Kimi 系"
+
+[[rules]]
+name = "identity-meta"
+field = "any"
+match = "regex"
+pattern = "(?i)(?:trained|developed|built) by Meta|我(?:是|叫)\\s*Llama"
+score = 40
+description = "自称 Meta Llama 系"
+
+# ---------- 中危：代际/身份矛盾线索 ----------
+
+# 知识截止日自述，可与宣称型号比对（llm-verify: 同一端点报出多个截止日是高危）
+[[rules]]
+name = "knowledge-cutoff-leak"
+field = "any"
+match = "regex"
+pattern = "(?i)knowledge cutoff (?:is |of )?(?:in )?(?:early |mid |late )?\\w+ \\d{4}|知识(?:截止|截至).{0,10}\\d{4}"
+score = 10
+description = "自述知识截止日，记录后与宣称型号代际比对"
+
+# CoT 语言穿帮：英文任务的思考链里出现大段中文，疑似套壳
+[[rules]]
+name = "cot-language-switch"
+field = "reasoning"
+match = "regex"
+pattern = "[\\u4e00-\\u9fff]{20,}"
+score = 15
+description = "CoT 里出现大段中文，可能是套壳国产模型"
+
+# ---------- 豁免（请求侧负分） ----------
+#
+# 用户主动诱导的身份表述不应计入可疑度。注意豁免是“总量豁免”：
+# 目前不区分用户要求假扮的厂商和模型实际自报的厂商是否一致。
+
+[[rules]]
+name = "roleplay-excuse"
+target = "request"
+field = "any"
+match = "regex"
+pattern = "(?i)(?:pretend (?:to be|you are)|act as|role-?play|imagine you are|play the role of|你(?:来)?(?:扮演|假[装办扮]|饰演)|假[装办扮](?:你|成)|假设你是|你现在(?:是|扮演))"
+score = -40
+description = "用户主动要求角色扮演/假扮，身份自报类命中可信度打折"
+
+# ---------- 低危：口癖/文风（弱信号，靠叠加） ----------
+
+[[rules]]
+name = "gpt-mannerism"
+field = "content"
+match = "contains"
+pattern = "As an AI language model"
+score = 10
+description = "典型 GPT 系措辞"
+
+[[rules]]
+name = "gpt-delve"
+field = "content"
+match = "regex"
+pattern = "(?i)\\bdelves? into\\b"
+score = 5
+description = "GPT-4 著名口癖 delve into"
+
+[[rules]]
+name = "cn-ai-phrasebook"
+field = "any"
+match = "regex"
+pattern = "综上所述|总而言之|在一定程度上|值得注意的是|不难看出"
+score = 5
+description = "中文 AI 腔高频词（AIGC 检测同款特征），出现在自称非中文模型的输出里时注意"
+
+[[rules]]
+name = "r1-self-correction"
+field = "reasoning"
+match = "regex"
+pattern = "\\bWait, (?:no|that|wait|let me)"
+score = 3
+description = "o1/R1 式自我纠偏口癖，出现在自称非推理模型的 CoT 里时注意"

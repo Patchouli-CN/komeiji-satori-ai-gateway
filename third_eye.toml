@@ -1,0 +1,62 @@
+# 觉之瞳 —— KomeijiSatori 配置
+
+[gateway]
+host = "127.0.0.1"
+port = 8400
+check_interval_seconds = 300
+# 流式请求自动补 stream_options.include_usage，给 usage 分词侧信道喂数据
+inject_usage = true
+
+# 上游列表。api_key 支持 "env:VAR_NAME" 从环境变量读取。
+# models 列出该上游宣称提供的模型，网关按请求里的 model 路由。
+[[upstreams]]
+name = "openai"
+base_url = "https://api.openai.com/v1"
+api_key = "env:OPENAI_API_KEY"
+models = ["gpt-4o", "gpt-4o-mini"]
+
+# [[upstreams]]
+# name = "some-reseller"
+# base_url = "https://example.com/v1"
+# api_key = "env:RESELLER_KEY"
+# models = ["claude-opus-4"]
+
+# 指纹核验：对固定 prompt 取首 token 的 top-logprobs 分布，
+# 与可信参考指纹做 JS 散度比对。参考指纹用
+#   python -m satori_gateway collect --upstream openai --model gpt-4o
+# 从可信端点采集，存到 reference_dir。
+[fingerprint]
+reference_dir = "fingerprints"
+# 每个上游+模型要核验时用的探针 prompt
+probe_prompt = "The capital of France is"
+top_logprobs = 10
+# JS 散度超过该阈值判定为“不是同一个模型”
+js_threshold = 0.15
+
+# 自定义规则：见 rules.toml，命中累加可疑度，达到阈值实时告警
+[rules]
+path = "rules.toml"
+suspicion_threshold = 50
+
+# 身份探针：每轮从内置题组随机抽样主动问身份，厂商自报/截止年交叉验证
+# + 首 token logprob 分布对参考指纹。注意：会产生真实 API 调用费用。
+[identity]
+enabled = true
+sample_size = 5
+max_tokens = 64
+
+# 流量录制：开启后每条请求的 请求文本/正文/CoT 按天追加到 JSONL，
+# 可用 satori replay 离线回放取证（用今天的规则审昨天的流量）。
+# 注意：录制的是对话文本本身，涉敏场景谨慎开启并管好 records 目录权限。
+[record]
+enabled = false
+directory = "records"
+
+# 金丝雀：固定考题 + 期望子串，周期性抽查输出质量漂移
+[[canary.cases]]
+prompt = "用一句话回答：1+1 等于几？"
+expect = "2"
+
+[[canary.cases]]
+prompt = "Reply with exactly the word: satori"
+expect = "satori"

@@ -1,0 +1,20 @@
+[project]
+name = "satori-ai-gateway"
+version = "0.1.0"
+description = "KomeijiSatori — an AI gateway that reads the minds of upstream providers"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+satori = "satori_gateway.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/satori_gateway"]

@@ -1,0 +1,24 @@
+# 覚のルール —— 用户私货规则
+#
+# 内置规则（厂商自报、伪装泄漏、口癖等 16 条）随包发布、始终加载，
+# 见 src/satori_gateway/builtin_rules.toml 的头部注释了解调研来源。
+# 在这里写同名规则可覆盖内置（比如调分数），写新名字则追加。
+#
+# 字段说明：
+#   name        规则名（日志/事件里显示）
+#   pattern     匹配内容
+#   field       作用域：content（正文）| reasoning（CoT）| any（默认）
+#   match       匹配方式：contains（默认）| regex
+#   score       命中加的可疑度（默认 10，可为负）
+#   description 备注，命中时随事件一起推送
+#   target      response（默认，看模型输出）| request（看用户请求，
+#               通常配负分做豁免，如内置的 roleplay-excuse）
+
+# 示例：项目里约定 Claude 系上游，抓到 OpenAI 自报直接拉满
+# [[rules]]
+# name = "identity-openai"
+# field = "any"
+# match = "regex"
+# pattern = "(?i)(?:trained|developed|created|built) by OpenAI|OpenAI(?:开发|训练|推出)|我是\\s*ChatGPT"
+# score = 100
+# description = "本项目上游应为 Anthropic，出现 OpenAI 自报直接告警"

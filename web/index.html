@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>古明地觉 · KomeijiSatori</title>
+<style>
+  :root {
+    --bg: #17111f;
+    --panel: #211831;
+    --panel2: #2a1f3e;
+    --border: #3d2d5c;
+    --text: #e8ddf5;
+    --dim: #9d8bb8;
+    --lavender: #b98cf2;
+    --pink: #f2a7c3;
+    --red: #ff6b81;
+    --green: #7ee2a8;
+    --orange: #ffb86b;
+    --blue: #7ec8f2;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  /* ---------- 头部：觉之瞳 ---------- */
+  header { display: flex; align-items: center; gap: 20px; margin-bottom: 24px; }
+  .eye {
+    width: 64px; height: 64px; border-radius: 50%;
+    background: radial-gradient(circle at 50% 45%, #fdfaff 0%, #e6d9f7 60%, #cbb3ea 100%);
+    border: 3px solid var(--lavender);
+    box-shadow: 0 0 18px rgba(185, 140, 242, .55);
+    position: relative; flex-shrink: 0;
+    animation: blink 5s infinite;
+  }
+  .eye::before { /* 虹膜 */
+    content: ""; position: absolute; inset: 14px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 40% 35%, #d98cb8 0%, #8e4fa8 55%, #4a2466 100%);
+  }
+  .eye::after { /* 瞳孔 + 高光 */
+    content: ""; position: absolute; left: 50%; top: 50%;
+    width: 12px; height: 12px; margin: -6px 0 0 -6px;
+    border-radius: 50%; background: #1c0f2a;
+    box-shadow: 4px -4px 0 -3px #fff;
+  }
+  @keyframes blink {
+    0%, 92%, 100% { transform: scaleY(1); }
+    95% { transform: scaleY(.06); }
+  }
+  h1 { font-size: 26px; letter-spacing: 2px; color: var(--lavender); }
+  h1 .jp { color: var(--pink); font-size: 18px; margin-left: 8px; }
+  .subtitle { color: var(--dim); font-size: 13px; margin-top: 4px; }
+
+  /* ---------- 连接栏 ---------- */
+  .connbar {
+    display: flex; gap: 10px; align-items: center;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 20px;
+  }
+  .connbar input {
+    flex: 1; max-width: 340px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px;
+    font-size: 13px; outline: none;
+  }
+  .connbar input:focus { border-color: var(--lavender); }
+  .connbar button {
+    background: var(--lavender); color: #241733; border: none; border-radius: 6px;
+    padding: 7px 16px; font-weight: 600; cursor: pointer;
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.off { background: var(--red); box-shadow: 0 0 8px var(--red); }
+  #connState { font-size: 12px; color: var(--dim); }
+
+  /* ---------- 面板 ---------- */
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .panel h2 { font-size: 15px; color: var(--pink); margin-bottom: 12px; letter-spacing: 1px; }
+  .empty { color: var(--dim); font-size: 13px; padding: 8px 0; }
+
+  /* 可疑度卡片 */
+  .susp-card { margin-bottom: 14px; }
+  .susp-head { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; }
+  .susp-head .who { color: var(--text); }
+  .susp-head .num { color: var(--orange); font-variant-numeric: tabular-nums; }
+  .bar { height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+  .bar > div {
+    height: 100%; border-radius: 4px;
+    background: linear-gradient(90deg, var(--lavender), var(--orange), var(--red));
+    transition: width .4s ease;
+  }
+  .susp-card.over .num { color: var(--red); font-weight: 700; }
+  .susp-card.over .bar > div { background: var(--red); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .5; } }
+
+  /* 核验结果表 */
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--dim); font-weight: 500; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+  .badge.ok { background: rgba(126, 226, 168, .15); color: var(--green); }
+  .badge.bad { background: rgba(255, 107, 129, .15); color: var(--red); }
+
+  /* 事件流 */
+  #feed { max-height: 420px; overflow-y: auto; font-size: 12.5px; }
+  .evt { padding: 7px 10px; border-left: 3px solid var(--border); margin-bottom: 6px; background: var(--panel2); border-radius: 0 6px 6px 0; }
+  .evt .t { color: var(--dim); margin-right: 8px; font-variant-numeric: tabular-nums; }
+  .evt .kind { font-weight: 600; margin-right: 8px; }
+  .evt.check .kind { color: var(--blue); }
+  .evt.request .kind { color: var(--dim); }
+  .evt.suspicion { border-left-color: var(--orange); }
+  .evt.suspicion .kind { color: var(--orange); }
+  .evt.alert { border-left-color: var(--red); background: rgba(255, 107, 129, .12); }
+  .evt.alert .kind { color: var(--red); }
+  .evt .snip { display: block; color: var(--dim); margin-top: 3px; font-size: 11.5px; word-break: break-all; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="eye"></div>
+  <div>
+    <h1>KomeijiSatori<span class="jp">古明地覚</span></h1>
+    <div class="subtitle">覚の瞳は全てを見通す —— AI 网关实时盯梢面板</div>
+  </div>
+</header>
+
+<div class="connbar">
+  <div class="dot" id="dot"></div>
+  <span id="connState">未连接</span>
+  <input id="gwUrl" placeholder="网关地址，如 http://127.0.0.1:8400">
+  <button onclick="connect()">连接</button>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>可疑度账本</h2>
+    <div id="suspicion"><div class="empty">暂无数据 —— 觉大人还没起疑心</div></div>
+  </div>
+  <div class="panel">
+    <h2>周期核验</h2>
+    <div id="checks"><div class="empty">暂无核验结果</div></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>实时事件流</h2>
+  <div id="feed"><div class="empty">连接后开始推送</div></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let ws = null, reconnectTimer = null;
+
+$("gwUrl").value = localStorage.getItem("satori.gw") || "http://127.0.0.1:8400";
+
+function fmtTime(ts) {
+  return new Date(ts * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function setConn(state, cls) {
+  $("connState").textContent = state;
+  $("dot").className = "dot " + cls;
+}
+
+/* ---------- 渲染 ---------- */
+
+function renderSuspicion(list) {
+  const box = $("suspicion");
+  if (!list.length) {
+    box.innerHTML = '<div class="empty">暂无数据 —— 觉大人还没起疑心</div>';
+    return;
+  }
+  box.innerHTML = list.map(s => {
+    const pct = Math.min(100, (s.score / s.threshold) * 100);
+    const over = s.score >= s.threshold ? " over" : "";
+    return `<div class="susp-card${over}">
+      <div class="susp-head">
+        <span class="who">${s.upstream} / ${s.model}</span>
+        <span class="num">${s.score} / ${s.threshold}</span>
+      </div>
+      <div class="bar"><div style="width:${pct}%"></div></div>
+    </div>`;
+  }).join("");
+}
+
+function renderChecks(list) {
+  const box = $("checks");
+  if (!list.length) { box.innerHTML = '<div class="empty">暂无核验结果</div>'; return; }
+  box.innerHTML = `<table>
+    <tr><th>checker</th><th>上游/模型</th><th>结果</th><th>详情</th></tr>
+    ${list.map(c => `<tr>
+      <td>${c.checker}</td>
+      <td>${c.upstream}/${c.model}</td>
+      <td><span class="badge ${c.ok ? "ok" : "bad"}">${c.ok ? "OK" : "NG"}</span></td>
+      <td>${c.detail}</td>
+    </tr>`).join("")}
+  </table>`;
+}
+
+function addEvent(e) {
+  const feed = $("feed");
+  const ph = feed.querySelector(".empty");
+  if (ph) ph.remove();
+
+  let kind = e.type, body = "";
+  if (e.type === "check") {
+    body = `${e.upstream}/${e.model} ${e.ok ? "✓" : "✗"} ${e.detail}`;
+  } else if (e.type === "request") {
+    body = `${e.upstream}/${e.model} · ${e.status} · 首字节 ${e.first_byte_ms}ms`
+      + (e.total_ms != null ? ` · 共 ${e.total_ms}ms · ${e.bytes}B` : "");
+  } else if (e.type === "suspicion") {
+    body = `${e.upstream}/${e.model} 可疑度 ${e.gained >= 0 ? "+" : ""}${e.gained} → ${e.total}`
+      + `（${e.hits.map(h => h.rule).join(", ")}）`;
+  } else if (e.type === "alert") {
+    body = `覚「想起うさぎは警戒を」 ${e.upstream}/${e.model} 可疑度 ${e.total} 越界（阈值 ${e.threshold}）`;
+  } else if (e.type === "snapshot") {
+    body = "已同步全量快照";
+  }
+
+  const div = document.createElement("div");
+  div.className = "evt " + e.type;
+  const ts = e.ts || Date.now() / 1000;
+  div.innerHTML = `<span class="t">${fmtTime(ts)}</span><span class="kind">${kind}</span>${body}`
+    + (e.hits ? e.hits.map(h =>
+        `<span class="snip">[${h.field}] ${h.rule}: …${h.snip}… ${h.description || ""}</span>`
+      ).join("") : "");
+  feed.prepend(div);
+  while (feed.children.length > 200) feed.lastChild.remove();
+}
+
+/* ---------- 状态同步 ---------- */
+
+let suspicionMap = {}; // "up/model" -> {upstream, model, score, threshold}
+
+async function refreshStatus(base) {
+  try {
+    const r = await fetch(base + "/satori/status");
+    const data = await r.json();
+    suspicionMap = {};
+    for (const s of data.suspicion) suspicionMap[s.upstream + "/" + s.model] = s;
+    renderSuspicion(Object.values(suspicionMap));
+    renderChecks(data.checks);
+  } catch (err) {
+    addEvent({ type: "alert", ts: Date.now() / 1000, upstream: "-", model: "-",
+               total: 0, threshold: 0, detail: "status 拉取失败: " + err });
+  }
+}
+
+/* ---------- WebSocket ---------- */
+
+function connect() {
+  const base = $("gwUrl").value.replace(/\/+$/, "");
+  localStorage.setItem("satori.gw", base);
+  if (ws) ws.close();
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
+  setConn("连接中…", "");
+  refreshStatus(base);
+
+  ws = new WebSocket(base.replace(/^http/, "ws") + "/satori/live");
+  ws.onopen = () => setConn("已连接 · 觉之瞳睁开了", "on");
+  ws.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    addEvent(e);
+    if (e.type === "suspicion") {
+      const key = e.upstream + "/" + e.model;
+      const th = (suspicionMap[key] || {}).threshold || 50;
+      suspicionMap[key] = { upstream: e.upstream, model: e.model, score: e.total, threshold: th };
+      renderSuspicion(Object.values(suspicionMap));
+    } else if (e.type === "snapshot") {
+      refreshStatus(base);
+    }
+  };
+  ws.onclose = () => {
+    setConn("断开，3s 后重连…", "off");
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+  ws.onerror = () => ws.close();
+}
+
+connect();
+</script>
+</body>
+</html>

@@ -6,7 +6,7 @@
 
 AI API 中转市场乱象丛生：卖你 Claude 实际套壳小模型、限流时偷偷路由到弱模型、同名模型随时间悄悄降智。厂商掌握一切数据，你只有一个 `model` 字段——而那个字段不值钱。
 
-KomeijiSatori 是一个 OpenAI 兼容网关，架在你的客户端和上游之间。**客户端无感接入，觉大人在后面实时盯着每一滴流量**。
+KomeijiSatori 是一个多协议 AI 网关（OpenAI Chat / Anthropic Messages / OpenAI Responses），架在你的客户端和上游之间。**客户端无感接入，觉大人在后面实时盯着每一滴流量**。
 
 ## 设计宣言
 

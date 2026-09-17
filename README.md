@@ -6,7 +6,7 @@
 
 The AI API relay market is a mess: "Claude" endpoints secretly serving small open-source models, silent routing to weaker models under load, the same model name quietly getting dumber over time. The vendor holds all the data; you get a single `model` field — and that field is worthless.
 
-KomeijiSatori is an OpenAI-compatible gateway that sits between your clients and your upstreams. **Clients plug in without noticing anything; Satori watches every drop of traffic behind the scenes.**
+KomeijiSatori is a multi-protocol AI gateway (OpenAI Chat, Anthropic Messages, OpenAI Responses) that sits between your clients and your upstreams. **Clients plug in without noticing anything; Satori watches every drop of traffic behind the scenes.**
 
 ## Design Manifesto
 

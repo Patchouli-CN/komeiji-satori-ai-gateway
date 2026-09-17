@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -66,8 +67,6 @@ def reference_path(
     """参考指纹文件路径。非默认探针 prompt 的指纹带哈希后缀区分。"""
     safe = f"{upstream.name}--{model}".replace("/", "_")
     if prompt is not None and prompt != cfg.probe_prompt:
-        import hashlib
-
         safe += "--" + hashlib.sha1(prompt.encode()).hexdigest()[:8]
     return cfg.reference_dir / f"{safe}.json"
 

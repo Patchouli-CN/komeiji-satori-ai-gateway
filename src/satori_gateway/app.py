@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .adapters import Adapter, get_adapters
@@ -184,7 +185,6 @@ class KomeijiSatori:
         app.state.satori = self
 
         # 前后分离：页面独立部署，跨域放开（本地面板场景）
-        from fastapi.middleware.cors import CORSMiddleware
         app.add_middleware(
             CORSMiddleware,
             allow_origins=self.config.gateway.cors_origins,

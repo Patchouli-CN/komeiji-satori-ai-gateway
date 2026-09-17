@@ -7,6 +7,12 @@ check_interval_seconds = 300
 # 流式请求自动补 stream_options.include_usage，给 usage 分词侧信道喂数据
 inject_usage = true
 
+# 日志：level 支持 TRACE/DEBUG/INFO/WARNING/ERROR/CRITICAL；
+# file 留空只输出控制台。完整堆栈用环境变量 LOGURU_FULL_TRACEBACK=1 开启
+[logging]
+level = "INFO"
+file = "logs/satori.log"
+
 # 上游列表。api_key 支持 "env:VAR_NAME" 从环境变量读取。
 # models 列出该上游宣称提供的模型，网关按请求里的 model 路由。
 [[upstreams]]

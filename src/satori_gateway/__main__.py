@@ -11,13 +11,16 @@ import argparse
 import asyncio
 import json
 import logging
+from pathlib import Path
 
 import httpx
+import uvicorn
 
 from .app import KomeijiSatori
 from .checkers.answerprint import answers_path, collect_answers
 from .checkers.fingerprint import probe, reference_path
 from .config import Config, load
+from .logger import setup_logging
 from .record import ingest_markdown, replay
 from .registry import build_checkers
 from .rules import RuleEngine, load_builtin_rules, load_rules, merge_rules
@@ -87,8 +90,6 @@ def _replay(config_path: str, file: str) -> None:
 
 
 def _ingest(transcript: str, out: str, upstream: str, model: str) -> None:
-    from pathlib import Path
-
     entries = list(ingest_markdown(transcript, upstream=upstream, model=model))
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,7 +100,7 @@ def _ingest(transcript: str, out: str, upstream: str, model: str) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    setup_logging(log_level="INFO")
 
     parser = argparse.ArgumentParser(prog="satori", description="KomeijiSatori AI gateway")
     parser.add_argument("--config", default="third_eye.toml")
@@ -145,11 +146,12 @@ def main() -> None:
         _ingest(args.transcript, args.out, args.upstream, args.model)
         return
 
-    import uvicorn
-
     cfg = load(args.config)
+    # 按配置重建日志（级别/文件），uvicorn 的日志交给 loguru 拦截
+    setup_logging(log_level=cfg.logging.level, log_file=cfg.logging.file or None)
     satori = KomeijiSatori(cfg, build_checkers(cfg), _build_engine(cfg))
-    uvicorn.run(satori.app, host=cfg.gateway.host, port=cfg.gateway.port)
+    uvicorn.run(satori.app, host=cfg.gateway.host, port=cfg.gateway.port,
+                log_config=None)
 
 
 if __name__ == "__main__":

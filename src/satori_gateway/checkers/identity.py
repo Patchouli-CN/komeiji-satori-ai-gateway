@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import random
 import re
@@ -135,8 +136,6 @@ class IdentityProbeChecker:
 
             ref_file = reference_path(self.fp_cfg, upstream, model, prompt)
             if ref_file.exists() and dist:
-                import json
-
                 ref = json.loads(ref_file.read_text(encoding="utf-8"))
                 js_hits.append(js_divergence(ref, dist))
                 refs += 1

@@ -11,3 +11,4 @@ dist/
 # 运行时数据：录制流量和参考指纹不进仓库（可能含对话内容和端点信息）
 records/
 fingerprints/
+logs/

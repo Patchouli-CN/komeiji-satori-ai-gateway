@@ -80,6 +80,13 @@ class AnswerPrintConfig:
 
 
 @dataclass(frozen=True)
+class LoggingConfig:
+    level: str = "INFO"
+    # 日志文件路径；空字符串 = 只输出控制台
+    file: str = ""
+
+
+@dataclass(frozen=True)
 class Config:
     gateway: GatewayConfig
     fingerprint: FingerprintConfig
@@ -88,6 +95,7 @@ class Config:
     record: RecordConfig
     identity: IdentityConfig
     answerprint: AnswerPrintConfig
+    logging: LoggingConfig
     upstreams: list[Upstream]
 
     def upstream_for(self, model: str) -> Upstream | None:
@@ -106,6 +114,7 @@ def load(path: str | Path = "third_eye.toml") -> Config:
     rec = raw.get("record", {})
     ident = raw.get("identity", {})
     ap = raw.get("answerprint", {})
+    lg = raw.get("logging", {})
 
     return Config(
         gateway=GatewayConfig(
@@ -139,6 +148,10 @@ def load(path: str | Path = "third_eye.toml") -> Config:
             enabled=ap.get("enabled", False),
             similarity_threshold=ap.get("similarity_threshold", 0.6),
             max_tokens=ap.get("max_tokens", 128),
+        ),
+        logging=LoggingConfig(
+            level=lg.get("level", "INFO"),
+            file=lg.get("file", ""),
         ),
         upstreams=[Upstream(**u) for u in raw.get("upstreams", [])],
     )

@@ -45,6 +45,11 @@ path = "rules.toml"
 suspicion_threshold = 50
 # WATCH 等级阈值：可疑度到此进入“可能降级，提高关注”
 watch_threshold = 25
+# 账本衰减半衰期（秒）：孤立小错随时间归零，持续掺水照样积聚
+decay_half_life_seconds = 3600
+# 命中率通道：严重规则（≥25 分）命中率超 5% 告警，抗 90%真10%假 掺水
+hit_rate_threshold = 0.05
+hit_rate_min_samples = 50
 
 # 身份探针：每轮从内置题组随机抽样主动问身份，厂商自报/截止年交叉验证
 # + 首 token logprob 分布对参考指纹。注意：会产生真实 API 调用费用。

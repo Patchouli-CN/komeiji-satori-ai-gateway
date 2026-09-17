@@ -57,6 +57,11 @@ class RulesConfig:
     suspicion_threshold: int = 50
     # 可疑度达到该值进入 WATCH（可能降级，提高关注）
     watch_threshold: int = 25
+    # 账本衰减半衰期（秒）：孤立小错随时间归零，持续掺水照样积聚
+    decay_half_life_seconds: int = 3600
+    # 命中率通道：严重规则（score≥25）命中率超过该值告警
+    hit_rate_threshold: float = 0.05
+    hit_rate_min_samples: int = 50
 
 
 @dataclass(frozen=True)
@@ -145,6 +150,9 @@ def load(path: str | Path = "third_eye.toml") -> Config:
             path=Path(rl.get("path", "rules.toml")),
             suspicion_threshold=rl.get("suspicion_threshold", 50),
             watch_threshold=rl.get("watch_threshold", 25),
+            decay_half_life_seconds=rl.get("decay_half_life_seconds", 3600),
+            hit_rate_threshold=rl.get("hit_rate_threshold", 0.05),
+            hit_rate_min_samples=rl.get("hit_rate_min_samples", 50),
         ),
         record=RecordConfig(
             enabled=rec.get("enabled", False),

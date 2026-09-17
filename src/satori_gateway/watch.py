@@ -93,3 +93,39 @@ class BillingWatch:
         if content_chars <= 0 or completion_tokens <= 0:
             return None
         return self._drift.observe((upstream, model), content_chars / completion_tokens)
+
+
+class HitRateWatch:
+    """规则命中率通道：抗掺水专用。
+
+    统计严重规则（score≥25：厂商自报/伪装泄漏/代理自曝）的命中率。
+    孤立误报被 EMA 稀释，持续掺水（比如 90% 真 10% 假）会让命中率
+    稳定越过阈值——掺多少抓多少。
+    """
+
+    def __init__(
+        self,
+        threshold: float = 0.05,
+        min_samples: int = 50,
+        alpha: float = 0.05,
+    ) -> None:
+        self.threshold = threshold
+        self.min_samples = min_samples
+        self.alpha = alpha
+        self._states: dict[tuple[str, str], list[float]] = {}  # key -> [ema, samples]
+
+    def observe(self, upstream: str, model: str, serious_hit: bool) -> str | None:
+        key = (upstream, model)
+        ema, samples = self._states.get(key, [0.0, 0])
+        samples += 1
+        ema = (1 - self.alpha) * ema + self.alpha * (1.0 if serious_hit else 0.0)
+        self._states[key] = [ema, samples]
+
+        if samples >= self.min_samples and ema > self.threshold:
+            # 告警后重置，重新武装
+            self._states[key] = [0.0, 0]
+            return (
+                f"严重规则命中率 {ema:.1%} 超阈值 {self.threshold:.1%}"
+                f"（{samples} 个样本）——疑似掺水流量"
+            )
+        return None

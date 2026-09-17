@@ -20,7 +20,7 @@ from .levels import AlertLevel, level_of
 from .record import append_record, make_entry
 from .rules import RuleEngine
 from .tokenwatch import TokenizerWatch
-from .watch import BillingWatch, LatencyWatch
+from .watch import BillingWatch, HitRateWatch, LatencyWatch
 
 log = logging.getLogger("satori")
 
@@ -100,10 +100,16 @@ class KomeijiSatori:
         self.tokenwatch = TokenizerWatch()
         self.latencywatch = LatencyWatch()
         self.billingwatch = BillingWatch()
+        self.hitratewatch = HitRateWatch(
+            threshold=config.rules.hit_rate_threshold,
+            min_samples=config.rules.hit_rate_min_samples,
+        )
         # (checker, upstream, model) -> 最新核验结果
         self.results: dict[tuple[str, str, str], CheckResult] = {}
-        # (upstream, model) -> 累计可疑度
-        self.suspicion: dict[tuple[str, str], int] = {}
+        # (upstream, model) -> 累计可疑度（写入时的有效值，读取需衰减）
+        self.suspicion: dict[tuple[str, str], float] = {}
+        # (upstream, model) -> 账本最后写入时刻（衰减基准）
+        self._ledger_ts: dict[tuple[str, str], float] = {}
         # (upstream, model) -> 熔断时刻；在册即拦截
         self.breakers: dict[tuple[str, str], float] = {}
         # (upstream, model) -> 熔断期间拦截次数
@@ -396,7 +402,17 @@ class KomeijiSatori:
             "completion_tokens": usage.get("completion_tokens"),
         })
         if self.rule_engine is not None:
-            await self._apply_rules(upstream, model, content, reasoning, request_text)
+            hits = await self._apply_rules(upstream, model, content, reasoning, request_text)
+            # 命中率通道：严重规则（≥25 分）命中率，抗掺水
+            hr_alert = self.hitratewatch.observe(
+                upstream, model, any(h["score"] >= 25 for h in hits),
+            )
+            if hr_alert:
+                await self._add_suspicion(upstream, model, [{
+                    "rule": "hit-rate", "score": 20, "field": "content",
+                    "snippet": hr_alert,
+                    "description": "严重规则命中率通道（抗掺水）",
+                }])
         # usage 分词侧信道
         tw_alert = self.tokenwatch.observe(
             upstream, model, len(request_text), usage.get("prompt_tokens", 0),
@@ -435,24 +451,42 @@ class KomeijiSatori:
     async def _apply_rules(
         self, upstream: str, model: str,
         content: str, reasoning: str, request_text: str = "",
-    ) -> None:
-        """对一条完整响应跑规则引擎，命中交给账本。"""
+    ) -> list[dict]:
+        """对一条完整响应跑规则引擎，命中交给账本，并返回命中供命中率统计。"""
         assert self.rule_engine is not None
         hits = self.rule_engine.evaluate(content, reasoning, request_text)
-        if hits:
-            await self._add_suspicion(upstream, model, [
-                {"rule": h.rule, "score": h.score, "field": h.field,
-                 "snippet": h.snippet, "description": h.description}
-                for h in hits
-            ])
+        hit_dicts = [
+            {"rule": h.rule, "score": h.score, "field": h.field,
+             "snippet": h.snippet, "description": h.description}
+            for h in hits
+        ]
+        if hit_dicts:
+            await self._add_suspicion(upstream, model, hit_dicts)
+        return hit_dicts
+
+    def _decayed(self, key: tuple[str, str]) -> float:
+        """账本有效分：按半衰期衰减后的当前值。
+
+        孤立小错随时间归零，持续掺水的加分速度远超衰减，照样积聚——
+        审计学的"重要性水平"：不追究孤立小错，只追频率异常。
+        """
+        score = self.suspicion.get(key, 0.0)
+        if not score:
+            return 0.0
+        half = self.config.rules.decay_half_life_seconds
+        if half <= 0:
+            return score
+        dt = time.time() - self._ledger_ts.get(key, time.time())
+        return score * (0.5 ** (dt / half))
 
     async def _add_suspicion(self, upstream: str, model: str, hits: list[dict]) -> None:
-        """可疑度账本：累加、广播、等级跃迁（SAFETY/WATCH/DEGRADED）。"""
+        """可疑度账本：衰减、累加、广播、等级跃迁（SAFETY/WATCH/DEGRADED）。"""
         key = (upstream, model)
         gained = sum(h["score"] for h in hits)
-        prev = self.suspicion.get(key, 0)
-        total = max(0, prev + gained)  # 豁免分不能把账本扣成负数
+        prev = self._decayed(key)
+        total = max(0.0, prev + gained)  # 豁免分不能把账本扣成负数
         self.suspicion[key] = total
+        self._ledger_ts[key] = time.time()
 
         watch_th = self.config.rules.watch_threshold
         break_th = self.config.rules.suspicion_threshold
@@ -526,6 +560,7 @@ class KomeijiSatori:
         was_open = key in self.breakers
         self.breakers.pop(key, None)
         self.suspicion.pop(key, None)
+        self._ledger_ts.pop(key, None)
         if was_open:
             log.info("[breaker] %s/%s 已人工复位", key[0], key[1])
             await self.publish({
@@ -549,8 +584,10 @@ class KomeijiSatori:
                 for r in self.results.values()
             ],
             "suspicion": [
-                {"upstream": up, "model": m, "score": s,
-                 "level": level_of(s, self.config.rules.watch_threshold,
+                {"upstream": up, "model": m,
+                 "score": round(self._decayed((up, m)), 1),
+                 "level": level_of(self._decayed((up, m)),
+                                   self.config.rules.watch_threshold,
                                    self.config.rules.suspicion_threshold).value,
                  "threshold": self.config.rules.suspicion_threshold,
                  "watch_threshold": self.config.rules.watch_threshold}

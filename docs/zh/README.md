@@ -2,7 +2,9 @@
 
 > 覚の瞳は全てを見通す —— 看穿上游真面目的 AI 网关
 
-[English README](../README.md)
+[English README](../../README.md)
+
+**文档**：快速上手 [QUICKSTART.md](QUICKSTART.md) · 运维手册 [HANDBOOK.md](HANDBOOK.md) · 常见问题 [QA.md](QA.md) · [English docs](../en/QUICKSTART.md)
 
 AI API 中转市场乱象丛生：卖你 Claude 实际套壳小模型、限流时偷偷路由到弱模型、同名模型随时间悄悄降智。厂商掌握一切数据，你只有一个 `model` 字段——而那个字段不值钱。
 
@@ -93,7 +95,7 @@ satori ingest 会话记录.md --out records/x.jsonl      # markdown 会话记录
 
 ## FAQ 与故障排查
 
-常见问题（原理、费用、误报、扩展、局限）见 [QA.md](QA.md)。
+常见问题（原理、费用、误报、扩展、局限）见 [QA.md](QA.md)。快速上手与场景预设见 [QUICKSTART.md](QUICKSTART.md)，深入配置与原理见 [HANDBOOK.md](HANDBOOK.md)。
 
 Windows 用户注意：控制台 `curl -d` 直接打中文会被转成 GBK 导致 400，请把 JSON 写进文件用 `--data-binary @req.json` 发送（详见 QA.md）。
 

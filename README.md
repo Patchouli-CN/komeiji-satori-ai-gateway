@@ -2,7 +2,9 @@
 
 > The Third Eye sees through everything — an AI gateway that reads your upstream's true colors
 
-[中文文档](docs/README.zh-CN.md) · [Q&A (中文)](docs/QA.md)
+[中文文档](docs/zh/README.md) · [Q&A (中文)](docs/zh/QA.md)
+
+**Docs**: [Quickstart (EN)](docs/en/QUICKSTART.md) · [Handbook (EN)](docs/en/HANDBOOK.md) · [快速上手 (中文)](docs/zh/QUICKSTART.md) · [运维手册 (中文)](docs/zh/HANDBOOK.md)
 
 The AI API relay market is a mess: "Claude" endpoints secretly serving small open-source models, silent routing to weaker models under load, the same model name quietly getting dumber over time. The vendor holds all the data; you get a single `model` field — and that field is worthless.
 
@@ -95,7 +97,7 @@ Every section of `third_eye.toml` is commented: `[gateway]` (listen/CORS/usage i
 
 ## FAQ & Troubleshooting
 
-See [docs/QA.md](docs/QA.md) (Chinese) for principles, costs, false positives, extension guides, and limitations.
+See [docs/QA.md](docs/zh/QA.md) (Chinese) for principles, costs, false positives, extension guides, and limitations.
 
 Windows users: pasting Chinese into `curl -d` in the console gets mangled to GBK and returns 400 — write the JSON to a file and use `--data-binary @req.json`.
 

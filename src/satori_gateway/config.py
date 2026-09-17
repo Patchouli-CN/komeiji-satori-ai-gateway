@@ -72,6 +72,14 @@ class IdentityConfig:
 
 
 @dataclass(frozen=True)
+class AnswerPrintConfig:
+    enabled: bool = False
+    # 与参考作答的平均相似度低于该值判异常
+    similarity_threshold: float = 0.6
+    max_tokens: int = 128
+
+
+@dataclass(frozen=True)
 class Config:
     gateway: GatewayConfig
     fingerprint: FingerprintConfig
@@ -79,6 +87,7 @@ class Config:
     rules: RulesConfig
     record: RecordConfig
     identity: IdentityConfig
+    answerprint: AnswerPrintConfig
     upstreams: list[Upstream]
 
     def upstream_for(self, model: str) -> Upstream | None:
@@ -96,6 +105,7 @@ def load(path: str | Path = "third_eye.toml") -> Config:
     rl = raw.get("rules", {})
     rec = raw.get("record", {})
     ident = raw.get("identity", {})
+    ap = raw.get("answerprint", {})
 
     return Config(
         gateway=GatewayConfig(
@@ -124,6 +134,11 @@ def load(path: str | Path = "third_eye.toml") -> Config:
             enabled=ident.get("enabled", False),
             sample_size=ident.get("sample_size", 5),
             max_tokens=ident.get("max_tokens", 64),
+        ),
+        answerprint=AnswerPrintConfig(
+            enabled=ap.get("enabled", False),
+            similarity_threshold=ap.get("similarity_threshold", 0.6),
+            max_tokens=ap.get("max_tokens", 128),
         ),
         upstreams=[Upstream(**u) for u in raw.get("upstreams", [])],
     )

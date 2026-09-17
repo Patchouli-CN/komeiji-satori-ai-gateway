@@ -15,6 +15,7 @@ import logging
 import httpx
 
 from .app import KomeijiSatori
+from .checkers.answerprint import answers_path, collect_answers
 from .checkers.fingerprint import probe, reference_path
 from .config import Config, load
 from .record import ingest_markdown, replay
@@ -46,6 +47,21 @@ async def _collect(config_path: str, upstream_name: str, model: str, prompt: str
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(dist, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"参考指纹已写入 {out}（{len(dist)} 个 token）")
+
+
+async def _answers(config_path: str, upstream_name: str, model: str) -> None:
+    cfg = load(config_path)
+    upstream = next((u for u in cfg.upstreams if u.name == upstream_name), None)
+    if upstream is None:
+        raise SystemExit(f"配置里找不到 upstream {upstream_name!r}")
+
+    async with httpx.AsyncClient() as client:
+        answers = await collect_answers(client, upstream, model, cfg.answerprint.max_tokens)
+
+    out = answers_path(cfg.fingerprint, upstream, model)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(answers, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"参考作答已写入 {out}（{len(answers)} 题）")
 
 
 def _replay(config_path: str, file: str) -> None:
@@ -99,6 +115,11 @@ def main() -> None:
     collect.add_argument("--prompt", default=None,
                          help="自定义探针 prompt（身份题组参考用；默认取配置里的 probe_prompt）")
 
+    ans = sub.add_parser("answers", help="采集答案指纹参考作答")
+    ans.add_argument("--config", default="third_eye.toml")
+    ans.add_argument("--upstream", required=True)
+    ans.add_argument("--model", required=True)
+
     rp = sub.add_parser("replay", help="回放取证录制文件")
     rp.add_argument("--config", default="third_eye.toml")
     rp.add_argument("file")
@@ -113,6 +134,9 @@ def main() -> None:
 
     if args.cmd == "collect":
         asyncio.run(_collect(args.config, args.upstream, args.model, args.prompt))
+        return
+    if args.cmd == "answers":
+        asyncio.run(_answers(args.config, args.upstream, args.model))
         return
     if args.cmd == "replay":
         _replay(args.config, args.file)

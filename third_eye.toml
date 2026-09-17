@@ -45,6 +45,13 @@ enabled = true
 sample_size = 5
 max_tokens = 64
 
+# 答案指纹：固定题组 temp=0 作答与官方参考算相似度，纯黑盒通道，
+# Anthropic 系（无 logprobs）的主力指纹手段。参考用 satori answers 采集。
+[answerprint]
+enabled = true
+similarity_threshold = 0.6
+max_tokens = 128
+
 # 流量录制：开启后每条请求的 请求文本/正文/CoT 按天追加到 JSONL，
 # 可用 satori replay 离线回放取证（用今天的规则审昨天的流量）。
 # 注意：录制的是对话文本本身，涉敏场景谨慎开启并管好 records 目录权限。

@@ -18,6 +18,7 @@ from .config import Config, Upstream
 from .record import append_record, make_entry
 from .rules import RuleEngine
 from .tokenwatch import TokenizerWatch
+from .watch import BillingWatch, LatencyWatch
 
 log = logging.getLogger("satori")
 
@@ -95,6 +96,8 @@ class KomeijiSatori:
         self.checkers = checkers
         self.rule_engine = rule_engine
         self.tokenwatch = TokenizerWatch()
+        self.latencywatch = LatencyWatch()
+        self.billingwatch = BillingWatch()
         # (checker, upstream, model) -> 最新核验结果
         self.results: dict[tuple[str, str, str], CheckResult] = {}
         # (upstream, model) -> 累计可疑度
@@ -369,6 +372,24 @@ class KomeijiSatori:
                 "rule": "tokenizer-drift", "score": 30, "field": "usage",
                 "snippet": tw_alert,
                 "description": "usage 分词侧信道（自基线，无需官方参考）",
+            }])
+        # 延迟画像
+        lat_alert = self.latencywatch.observe(upstream, model, first_byte_ms)
+        if lat_alert:
+            await self._add_suspicion(upstream, model, [{
+                "rule": "latency-drift", "score": 15, "field": "latency",
+                "snippet": lat_alert,
+                "description": "首字节延迟画像漂移（自基线）",
+            }])
+        # 计费一致性
+        bill_alert = self.billingwatch.observe(
+            upstream, model, len(content), usage.get("completion_tokens", 0),
+        )
+        if bill_alert:
+            await self._add_suspicion(upstream, model, [{
+                "rule": "billing-drift", "score": 30, "field": "usage",
+                "snippet": bill_alert,
+                "description": "计费一致性审计（completion_tokens vs 实收文本）",
             }])
         if self.config.record.enabled:
             append_record(

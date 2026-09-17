@@ -50,6 +50,10 @@
 
 `third_eye.toml` 的 `[rules] suspicion_threshold`（默认 50）。内置规则分值设计：单条高危（伪装泄漏 50）直接越界；单条中危（厂商自报 40）需要第二条信号叠加——这是故意的，单信号不封神。
 
+### Q: 熔断器是什么？会误伤我的正常请求吗？
+
+`[breaker] enabled = true` 后，可疑度越界的 上游×模型 会被拉闸：后续请求一律 503 拦截，直到你人工确认并复位（`POST /satori/breaker/reset`）。定位是"味道变了实时停工"——宁可中断也不让低质量输出流进项目。拦截只针对越界的那个 上游×模型，其他上游不受影响；越界条件本来就要求多信号叠加（见阈值设计），误伤概率很低。怕打断工作流就保持 `enabled = false`，只告警不拦截。
+
 ### Q: 支持哪些客户端协议？
 
 三种入口：OpenAI Chat（`/v1/chat/completions`，透传）、Anthropic Messages（`/v1/messages`）、OpenAI Responses（`/v1/responses`）。v1 未翻译 tools / function calling / thinking block（检测照常，但依赖工具调用的客户端请留意）。上游侧有意保持 OpenAI 兼容——侦查对象全都说这个协议。

@@ -65,6 +65,12 @@ max_tokens = 128
 enabled = false
 directory = "records"
 
+# 熔断器：可疑度越界后拦截该 上游×模型 的后续请求（503），
+# 低质量输出实时停工、不污染项目；人工确认后
+# POST /satori/breaker/reset {"upstream":"...","model":"..."} 复位
+[breaker]
+enabled = true
+
 # 金丝雀：固定考题 + 期望子串，周期性抽查输出质量漂移
 [[canary.cases]]
 prompt = "用一句话回答：1+1 等于几？"

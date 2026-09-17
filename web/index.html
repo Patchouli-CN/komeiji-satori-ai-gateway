@@ -122,6 +122,8 @@
   .evt.suspicion .kind { color: var(--orange); }
   .evt.alert { border-left-color: var(--red); background: rgba(255, 107, 129, .12); }
   .evt.alert .kind { color: var(--red); }
+  .evt.breaker { border-left-color: var(--red); background: rgba(255, 107, 129, .22); }
+  .evt.breaker .kind { color: var(--red); font-weight: 700; }
   .evt .snip { display: block; color: var(--dim); margin-top: 3px; font-size: 11.5px; word-break: break-all; }
 </style>
 </head>
@@ -175,23 +177,38 @@ function setConn(state, cls) {
 
 /* ---------- 渲染 ---------- */
 
-function renderSuspicion(list) {
+function renderSuspicion(list, breakerSet = new Set()) {
   const box = $("suspicion");
-  if (!list.length) {
+  if (!list.length && !breakerSet.size) {
     box.innerHTML = '<div class="empty">暂无数据 —— 觉大人还没起疑心</div>';
     return;
   }
   box.innerHTML = list.map(s => {
     const pct = Math.min(100, (s.score / s.threshold) * 100);
-    const over = s.score >= s.threshold ? " over" : "";
+    const key = s.upstream + "/" + s.model;
+    const tripped = breakerSet.has(key);
+    const over = (s.score >= s.threshold || tripped) ? " over" : "";
+    const badge = tripped ? ' <span style="color:var(--red);font-weight:700">🚫已熔断</span>' : "";
     return `<div class="susp-card${over}">
       <div class="susp-head">
-        <span class="who">${s.upstream} / ${s.model}</span>
+        <span class="who">${key}${badge}</span>
         <span class="num">${s.score} / ${s.threshold}</span>
       </div>
       <div class="bar"><div style="width:${pct}%"></div></div>
     </div>`;
   }).join("");
+  // 已熔断但账本已清零的（score=0 不复位前仍展示）
+  for (const key of breakerSet) {
+    if (!list.some(s => s.upstream + "/" + s.model === key)) {
+      box.innerHTML += `<div class="susp-card over">
+        <div class="susp-head">
+          <span class="who">${key} <span style="color:var(--red);font-weight:700">🚫已熔断</span></span>
+          <span class="num">-</span>
+        </div>
+        <div class="bar"><div style="width:100%"></div></div>
+      </div>`;
+    }
+  }
 }
 
 function renderChecks(list) {
@@ -224,6 +241,10 @@ function addEvent(e) {
       + `（${e.hits.map(h => h.rule).join(", ")}）`;
   } else if (e.type === "alert") {
     body = `覚「想起うさぎは警戒を」 ${e.upstream}/${e.model} 可疑度 ${e.total} 越界（阈值 ${e.threshold}）`;
+  } else if (e.type === "breaker") {
+    body = e.state === "open"
+      ? `${e.upstream}/${e.model} 熔断器跳闸——味道变了，实时停工`
+      : `${e.upstream}/${e.model} 熔断器已人工复位`;
   } else if (e.type === "snapshot") {
     body = "已同步全量快照";
   }
@@ -249,7 +270,8 @@ async function refreshStatus(base) {
     const data = await r.json();
     suspicionMap = {};
     for (const s of data.suspicion) suspicionMap[s.upstream + "/" + s.model] = s;
-    renderSuspicion(Object.values(suspicionMap));
+    const breakerSet = new Set((data.breakers || []).map(b => b.upstream + "/" + b.model));
+    renderSuspicion(Object.values(suspicionMap), breakerSet);
     renderChecks(data.checks);
   } catch (err) {
     addEvent({ type: "alert", ts: Date.now() / 1000, upstream: "-", model: "-",

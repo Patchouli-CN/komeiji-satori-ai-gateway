@@ -87,6 +87,12 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True)
+class BreakerConfig:
+    # 可疑度越界后熔断：拦截该 上游×模型 的后续请求，人工复位前不放行
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class Config:
     gateway: GatewayConfig
     fingerprint: FingerprintConfig
@@ -96,6 +102,7 @@ class Config:
     identity: IdentityConfig
     answerprint: AnswerPrintConfig
     logging: LoggingConfig
+    breaker: BreakerConfig
     upstreams: list[Upstream]
 
     def upstream_for(self, model: str) -> Upstream | None:
@@ -115,6 +122,7 @@ def load(path: str | Path = "third_eye.toml") -> Config:
     ident = raw.get("identity", {})
     ap = raw.get("answerprint", {})
     lg = raw.get("logging", {})
+    br = raw.get("breaker", {})
 
     return Config(
         gateway=GatewayConfig(
@@ -153,5 +161,6 @@ def load(path: str | Path = "third_eye.toml") -> Config:
             level=lg.get("level", "INFO"),
             file=lg.get("file", ""),
         ),
+        breaker=BreakerConfig(enabled=br.get("enabled", False)),
         upstreams=[Upstream(**u) for u in raw.get("upstreams", [])],
     )

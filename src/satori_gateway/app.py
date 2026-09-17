@@ -103,6 +103,10 @@ class KomeijiSatori:
         self.results: dict[tuple[str, str, str], CheckResult] = {}
         # (upstream, model) -> 累计可疑度
         self.suspicion: dict[tuple[str, str], int] = {}
+        # (upstream, model) -> 熔断时刻；在册即拦截
+        self.breakers: dict[tuple[str, str], float] = {}
+        # (upstream, model) -> 熔断期间拦截次数
+        self._breaker_blocks: dict[tuple[str, str], int] = {}
         # /satori/live 的 WebSocket 订阅者
         self._subscribers: set[WebSocket] = set()
         self.app = self._create_app()
@@ -196,6 +200,7 @@ class KomeijiSatori:
             app.post(adapter.path)(self._make_proxy_handler(adapter))
         app.get("/v1/models")(self.list_models)
         app.get("/satori/status")(self.status)
+        app.post("/satori/breaker/reset")(self.breaker_reset)
         app.websocket("/satori/live")(self.live)
         return app
 
@@ -233,10 +238,38 @@ class KomeijiSatori:
         if upstream is None:
             return JSONResponse({"error": "no upstream configured"}, status_code=502)
 
+        # 熔断检查：已跳闸的 上游×模型 直接拦截，不放行污染流量
+        key = (upstream.name, model)
+        if key in self.breakers:
+            self._breaker_blocks[key] = self._breaker_blocks.get(key, 0) + 1
+            log.info("[breaker] 拦截 %s/%s（第 %d 次）", upstream.name, model,
+                     self._breaker_blocks[key])
+            return JSONResponse({
+                "error": "breaker open",
+                "detail": f"{upstream.name}/{model} 可疑度越界已熔断——质量存疑的流量不会污染你的项目。"
+                          "人工确认后 POST /satori/breaker/reset 复位",
+                "since": self.breakers[key],
+                "blocked": self._breaker_blocks[key],
+            }, status_code=503)
+
         client: httpx.AsyncClient = request.app.state.client
         req = self._build_forward_request(client, upstream, fwd_body)
         started = time.perf_counter()
-        resp = await client.send(req, stream=True)
+        try:
+            resp = await client.send(req, stream=True)
+        except httpx.HTTPError as exc:
+            await self.publish({
+                "type": "request",
+                "upstream": upstream.name,
+                "model": model,
+                "status": 502,
+                "first_byte_ms": round((time.perf_counter() - started) * 1000, 1),
+                "bytes": 0,
+            })
+            return JSONResponse(
+                {"error": "upstream unreachable", "detail": str(exc)},
+                status_code=502,
+            )
         first_byte_ms = (time.perf_counter() - started) * 1000
 
         if resp.status_code != 200:
@@ -443,6 +476,18 @@ class KomeijiSatori:
                 "total": total,
                 "threshold": threshold,
             })
+            # 熔断：味道变了实时停工，低质量输出不得污染项目
+            if self.config.breaker.enabled:
+                self.breakers[key] = time.time()
+                log.warning("[breaker] %s/%s 熔断器跳闸，后续请求拦截直至人工复位",
+                            upstream, model)
+                await self.publish({
+                    "type": "breaker",
+                    "state": "open",
+                    "upstream": upstream,
+                    "model": model,
+                    "total": total,
+                })
 
     async def list_models(self):
         data = [
@@ -451,6 +496,24 @@ class KomeijiSatori:
             for m in up.models
         ]
         return {"object": "list", "data": data}
+
+    async def breaker_reset(self, request: Request):
+        """人工复位熔断器：清除熔断状态和可疑度。"""
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+        key = (payload.get("upstream", ""), payload.get("model", ""))
+        was_open = key in self.breakers
+        self.breakers.pop(key, None)
+        self.suspicion.pop(key, None)
+        if was_open:
+            log.info("[breaker] %s/%s 已人工复位", key[0], key[1])
+            await self.publish({
+                "type": "breaker", "state": "closed",
+                "upstream": key[0], "model": key[1],
+            })
+        return {"reset": was_open, "upstream": key[0], "model": key[1]}
 
     async def status(self):
         return {
@@ -470,6 +533,11 @@ class KomeijiSatori:
                 {"upstream": up, "model": m, "score": s,
                  "threshold": self.config.rules.suspicion_threshold}
                 for (up, m), s in self.suspicion.items()
+            ],
+            "breakers": [
+                {"upstream": up, "model": m, "since": since,
+                 "blocked": self._breaker_blocks.get((up, m), 0)}
+                for (up, m), since in self.breakers.items()
             ],
         }
 

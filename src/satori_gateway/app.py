@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .adapters import Adapter, get_adapters
 from .checkers import CheckResult, Checker
 from .config import Config, Upstream
+from .levels import AlertLevel, level_of
 from .record import append_record, make_entry
 from .rules import RuleEngine
 from .tokenwatch import TokenizerWatch
@@ -446,15 +447,20 @@ class KomeijiSatori:
             ])
 
     async def _add_suspicion(self, upstream: str, model: str, hits: list[dict]) -> None:
-        """可疑度账本：累加、广播、越界告警。规则引擎和侧信道共用。"""
+        """可疑度账本：累加、广播、等级跃迁（SAFETY/WATCH/DEGRADED）。"""
         key = (upstream, model)
         gained = sum(h["score"] for h in hits)
         prev = self.suspicion.get(key, 0)
         total = max(0, prev + gained)  # 豁免分不能把账本扣成负数
         self.suspicion[key] = total
 
-        log.warning("[suspicion] %s/%s 可疑度 %+d → %d：%s",
-                    upstream, model, gained, total,
+        watch_th = self.config.rules.watch_threshold
+        break_th = self.config.rules.suspicion_threshold
+        prev_level = level_of(prev, watch_th, break_th)
+        new_level = level_of(total, watch_th, break_th)
+
+        log.warning("[suspicion] %s/%s 可疑度 %+d → %d [%s]：%s",
+                    upstream, model, gained, total, new_level.value,
                     ", ".join(h["rule"] for h in hits))
         await self.publish({
             "type": "suspicion",
@@ -462,19 +468,32 @@ class KomeijiSatori:
             "model": model,
             "gained": gained,
             "total": total,
+            "level": new_level.value,
             "hits": hits,
         })
 
-        threshold = self.config.rules.suspicion_threshold
-        if prev < threshold <= total:
+        # 等级跃迁：升级才广播，降级静默（复位走 breaker_reset 的 closed 事件）
+        if new_level.rank > prev_level.rank:
+            log.warning("[level] %s/%s 报警等级 %s → %s",
+                        upstream, model, prev_level.value, new_level.value)
+            await self.publish({
+                "type": "level",
+                "upstream": upstream,
+                "model": model,
+                "from": prev_level.value,
+                "to": new_level.value,
+                "total": total,
+            })
+
+        if new_level == AlertLevel.DEGRADED and prev_level != AlertLevel.DEGRADED:
             log.warning("[suspicion] %s/%s 可疑度越界（%d ≥ %d）——覚「想起うさぎは警戒を」",
-                        upstream, model, total, threshold)
+                        upstream, model, total, break_th)
             await self.publish({
                 "type": "alert",
                 "upstream": upstream,
                 "model": model,
                 "total": total,
-                "threshold": threshold,
+                "threshold": break_th,
             })
             # 熔断：味道变了实时停工，低质量输出不得污染项目
             if self.config.breaker.enabled:
@@ -531,7 +550,10 @@ class KomeijiSatori:
             ],
             "suspicion": [
                 {"upstream": up, "model": m, "score": s,
-                 "threshold": self.config.rules.suspicion_threshold}
+                 "level": level_of(s, self.config.rules.watch_threshold,
+                                   self.config.rules.suspicion_threshold).value,
+                 "threshold": self.config.rules.suspicion_threshold,
+                 "watch_threshold": self.config.rules.watch_threshold}
                 for (up, m), s in self.suspicion.items()
             ],
             "breakers": [

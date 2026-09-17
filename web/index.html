@@ -101,6 +101,10 @@
   }
   .susp-card.over .num { color: var(--red); font-weight: 700; }
   .susp-card.over .bar > div { background: var(--red); animation: pulse 1s infinite; }
+  .lvl { font-size: 11px; padding: 0 7px; border-radius: 9px; margin-left: 6px; }
+  .lvl.SAFETY { background: rgba(126,226,168,.15); color: var(--green); }
+  .lvl.WATCH { background: rgba(255,184,107,.18); color: var(--orange); }
+  .lvl.DEGRADED { background: rgba(255,107,129,.18); color: var(--red); font-weight: 700; }
   @keyframes pulse { 50% { opacity: .5; } }
 
   /* 核验结果表 */
@@ -124,6 +128,8 @@
   .evt.alert .kind { color: var(--red); }
   .evt.breaker { border-left-color: var(--red); background: rgba(255, 107, 129, .22); }
   .evt.breaker .kind { color: var(--red); font-weight: 700; }
+  .evt.level { border-left-color: var(--orange); background: rgba(255, 184, 107, .12); }
+  .evt.level .kind { color: var(--orange); font-weight: 700; }
   .evt .snip { display: block; color: var(--dim); margin-top: 3px; font-size: 11.5px; word-break: break-all; }
 </style>
 </head>
@@ -188,10 +194,11 @@ function renderSuspicion(list, breakerSet = new Set()) {
     const key = s.upstream + "/" + s.model;
     const tripped = breakerSet.has(key);
     const over = (s.score >= s.threshold || tripped) ? " over" : "";
+    const lvl = s.level ? `<span class="lvl ${s.level}">${s.level}</span>` : "";
     const badge = tripped ? ' <span style="color:var(--red);font-weight:700">🚫已熔断</span>' : "";
     return `<div class="susp-card${over}">
       <div class="susp-head">
-        <span class="who">${key}${badge}</span>
+        <span class="who">${key}${lvl}${badge}</span>
         <span class="num">${s.score} / ${s.threshold}</span>
       </div>
       <div class="bar"><div style="width:${pct}%"></div></div>
@@ -245,6 +252,8 @@ function addEvent(e) {
     body = e.state === "open"
       ? `${e.upstream}/${e.model} 熔断器跳闸——味道变了，实时停工`
       : `${e.upstream}/${e.model} 熔断器已人工复位`;
+  } else if (e.type === "level") {
+    body = `${e.upstream}/${e.model} 报警等级 ${e.from} → ${e.to}（可疑度 ${e.total}）`;
   } else if (e.type === "snapshot") {
     body = "已同步全量快照";
   }

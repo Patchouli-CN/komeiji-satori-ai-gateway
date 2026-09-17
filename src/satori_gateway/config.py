@@ -53,8 +53,10 @@ class CanaryCase:
 @dataclass(frozen=True)
 class RulesConfig:
     path: Path = Path("rules.toml")
-    # 可疑度累计达到该值触发告警
+    # 可疑度累计达到该值触发告警/熔断（DEGRADED）
     suspicion_threshold: int = 50
+    # 可疑度达到该值进入 WATCH（可能降级，提高关注）
+    watch_threshold: int = 25
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,7 @@ def load(path: str | Path = "third_eye.toml") -> Config:
         rules=RulesConfig(
             path=Path(rl.get("path", "rules.toml")),
             suspicion_threshold=rl.get("suspicion_threshold", 50),
+            watch_threshold=rl.get("watch_threshold", 25),
         ),
         record=RecordConfig(
             enabled=rec.get("enabled", False),

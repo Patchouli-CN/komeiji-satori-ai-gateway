@@ -43,6 +43,8 @@ js_threshold = 0.15
 [rules]
 path = "rules.toml"
 suspicion_threshold = 50
+# WATCH 等级阈值：可疑度到此进入“可能降级，提高关注”
+watch_threshold = 25
 
 # 身份探针：每轮从内置题组随机抽样主动问身份，厂商自报/截止年交叉验证
 # + 首 token logprob 分布对参考指纹。注意：会产生真实 API 调用费用。

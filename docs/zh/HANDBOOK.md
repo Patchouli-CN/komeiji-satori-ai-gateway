@@ -5,7 +5,7 @@
 ## 1. 架构总览
 
 ```
-客户端 ──▶ [协议适配器 adapters/] ──▶ 内部规范(OpenAI Chat) ──▶ [检测核心] ──▶ 上游(OpenAI 兼容)
+客户端 ──▶ [协议适配器 adapters/] ──▶ 内部规范(OpenAI Chat) ──▶ [检测核心] ──▶ [管线 pipelines/] ──▶ 上游(OpenAI 兼容 / Anthropic 原生)
           /v1/chat/completions(透传)        ├─ 规则引擎 rules.py（每条响应）
           /v1/messages                      ├─ 侧信道 watch.py（分词/计费/延迟/命中率）
           /v1/responses                     ├─ 周期 checker checkers/（声纹/答案/身份/金丝雀）
@@ -24,7 +24,7 @@
 | | `check_interval_seconds` | 300 | 周期 checker 间隔 |
 | | `cors_origins` | `["*"]` | 面板跨域（本地场景） |
 | | `inject_usage` | true | 流式请求自动补 `include_usage`（侧信道数据源） |
-| `[[upstreams]]` | `name` / `base_url` / `api_key` / `models` | — | 上游；`api_key` 支持 `env:VAR` |
+| `[[upstreams]]` | `name` / `base_url` / `api_key` / `models` / `protocol` | — | 上游；`api_key` 支持 `env:VAR`；`protocol` 默认 `openai`，可设 `anthropic` 直连原生 API（声纹通道仅 openai 协议可用） |
 | `[fingerprint]` | `reference_dir` | fingerprints | 参考指纹目录 |
 | | `probe_prompt` | "The capital of France is" | 声纹探针 |
 | | `top_logprobs` | 10 | 分布候选数（≤20） |

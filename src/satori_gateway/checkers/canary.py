@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 
 from ..config import CanaryCase, Upstream
+from ..pipelines import chat_once
 from ..registry import register_checker
 from . import CheckResult
 
@@ -28,19 +29,13 @@ class CanaryChecker:
 
         passed, failures = 0, []
         for case in self.cases:
-            resp = await client.post(
-                f"{upstream.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {upstream.resolve_key()}"},
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": case.prompt}],
-                    "max_tokens": 64,
-                    "temperature": 0,
-                },
-                timeout=60,
-            )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"] or ""
+            data = await chat_once(client, upstream, {
+                "model": model,
+                "messages": [{"role": "user", "content": case.prompt}],
+                "max_tokens": 64,
+                "temperature": 0,
+            }, timeout=60)
+            content = data["choices"][0]["message"]["content"] or ""
             if case.expect.lower() in content.lower():
                 passed += 1
             else:

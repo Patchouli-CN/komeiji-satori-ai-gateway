@@ -80,7 +80,7 @@
 
 ### Q: 支持哪些客户端协议？
 
-三种入口：OpenAI Chat（`/v1/chat/completions`，透传）、Anthropic Messages（`/v1/messages`）、OpenAI Responses（`/v1/responses`）。v1 未翻译 tools / function calling / thinking block（检测照常，但依赖工具调用的客户端请留意）。上游侧有意保持 OpenAI 兼容——侦查对象全都说这个协议。
+三种入口：OpenAI Chat（`/v1/chat/completions`，透传）、Anthropic Messages（`/v1/messages`）、OpenAI Responses（`/v1/responses`）。v1 未翻译 tools / function calling / thinking block（检测照常，但依赖工具调用的客户端请留意）。上游侧默认 OpenAI 兼容协议——侦查对象全都说这个协议；也可在 `[[upstreams]]` 设 `protocol = "anthropic"` 直连 Anthropic 原生 API（`pipelines/` 插件翻译，logprobs 声纹通道仅 openai 协议可用）。
 
 ### Q: Windows 下 curl 测试中文请求报 400？
 

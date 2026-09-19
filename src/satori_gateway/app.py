@@ -15,8 +15,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .adapters import Adapter, get_adapters
 from .checkers import CheckResult, Checker
-from .config import Config, Upstream
+from .config import Config
 from .levels import AlertLevel, level_of
+from .pipelines import TransferPipeline, build_pipeline
 from .record import append_record, make_entry
 from .rules import RuleEngine
 from .tokenwatch import TokenizerWatch
@@ -168,16 +169,17 @@ class KomeijiSatori:
 
     @staticmethod
     def _build_forward_request(
-        client: httpx.AsyncClient, upstream: Upstream, body: bytes
+        client: httpx.AsyncClient, pipe: TransferPipeline,
+        canonical: dict, body: bytes, mutated: bool,
     ) -> httpx.Request:
+        prepared = pipe.build_request(canonical)
+        # 恒等管线且请求体未突变时透传原始 body 字节，省一次序列化
+        content = body if (not mutated and pipe.passthrough) else prepared.body
         return client.build_request(
-            "POST",
-            f"{upstream.base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {upstream.resolve_key()}",
-                "Content-Type": "application/json",
-            },
-            content=body,
+            prepared.method,
+            prepared.url,
+            headers=prepared.headers,
+            content=content,
             timeout=300,
         )
 
@@ -260,7 +262,8 @@ class KomeijiSatori:
             }, status_code=503)
 
         client: httpx.AsyncClient = request.app.state.client
-        req = self._build_forward_request(client, upstream, fwd_body)
+        pipe = build_pipeline(upstream)
+        req = self._build_forward_request(client, pipe, canonical, body, mutated)
         started = time.perf_counter()
         try:
             resp = await client.send(req, stream=True)
@@ -297,8 +300,8 @@ class KomeijiSatori:
 
         content_type = resp.headers.get("content-type", "")
 
-        # 透传快车道：客户端协议即规范，逐字节转发
-        if adapter.passthrough:
+        # 透传快车道：客户端协议与上游协议都是规范本身，逐字节转发
+        if adapter.passthrough and pipe.passthrough:
             return StreamingResponse(
                 self._passthrough_stream(resp, upstream.name, model, fwd_body,
                                          content_type, started, first_byte_ms),
@@ -306,22 +309,25 @@ class KomeijiSatori:
                 media_type=content_type or "application/json",
             )
 
-        # 非流式：攒完整响应，检测后翻译回客户端协议
+        # 非流式：攒完整响应，管线译回规范，检测后翻译回客户端协议
         if not canonical.get("stream"):
             raw = await resp.aread()
             await resp.aclose()
-            await self._finalize(upstream.name, model, resp.status_code, content_type,
-                                 raw, fwd_body, started, first_byte_ms, len(raw))
             try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
+                payload = pipe.parse_response(raw)
+            except (json.JSONDecodeError, ValueError):
                 return JSONResponse({"error": "upstream returned non-JSON"}, status_code=502)
+            # 检测/录制看到的永远是规范格式
+            canonical_body = json.dumps(payload, ensure_ascii=False).encode()
+            await self._finalize(upstream.name, model, resp.status_code,
+                                 "application/json", canonical_body, fwd_body,
+                                 started, first_byte_ms, len(raw))
             return JSONResponse(adapter.from_canonical(payload))
 
-        # 流式翻译：规范 SSE → 客户端协议 SSE
+        # 流式翻译：上游 SSE → 规范 → 客户端协议 SSE
         return StreamingResponse(
-            self._translated_stream(resp, adapter, upstream.name, model, fwd_body,
-                                    content_type, started, first_byte_ms),
+            self._translated_stream(resp, adapter, pipe, upstream.name, model,
+                                    fwd_body, started, first_byte_ms),
             status_code=resp.status_code,
             media_type="text/event-stream",
         )
@@ -343,8 +349,9 @@ class KomeijiSatori:
                                  b"".join(parts), fwd_body, started, first_byte_ms, sent)
 
     async def _translated_stream(
-        self, resp: httpx.Response, adapter: Adapter, upstream: str, model: str,
-        fwd_body: bytes, content_type: str, started: float, first_byte_ms: float,
+        self, resp: httpx.Response, adapter: Adapter, pipe: TransferPipeline,
+        upstream: str, model: str, fwd_body: bytes,
+        started: float, first_byte_ms: float,
     ):
         sent = 0
         parts: list[bytes] = []
@@ -360,28 +367,34 @@ class KomeijiSatori:
             return out
 
         try:
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                raw_line = (line + "\n\n").encode()
-                parts.append(raw_line)
-                data = line[5:].strip()
-                if not data or data == "[DONE]":
-                    continue
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                for out in emit(adapter.translate_sse(chunk, state)):
+            # 管线把上游原生 SSE 译成规范 chunk；规范 chunk 序列化进 parts，
+            # _finalize/_extract_text 看到的永远是规范 SSE
+            async for chunk in pipe.translate_stream(resp.aiter_lines()):
+                parts.append(
+                    f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
+                )
+                if adapter.passthrough:
+                    # 客户端说的就是规范协议，直接吐规范 SSE 行
+                    out = parts[-1]
                     sent += len(out)
                     yield out
-            for out in emit(adapter.finish_sse(state)):
-                sent += len(out)
-                yield out
+                else:
+                    for out in emit(adapter.translate_sse(chunk, state)):
+                        sent += len(out)
+                        yield out
+            if adapter.passthrough:
+                tail = b"data: [DONE]\n\n"
+                sent += len(tail)
+                yield tail
+            else:
+                for out in emit(adapter.finish_sse(state)):
+                    sent += len(out)
+                    yield out
         finally:
             await resp.aclose()
-            await self._finalize(upstream, model, resp.status_code, content_type,
-                                 b"".join(parts), fwd_body, started, first_byte_ms, sent)
+            await self._finalize(upstream, model, resp.status_code,
+                                 "text/event-stream", b"".join(parts), fwd_body,
+                                 started, first_byte_ms, sent)
 
     async def _finalize(
         self, upstream: str, model: str, status: int, content_type: str,

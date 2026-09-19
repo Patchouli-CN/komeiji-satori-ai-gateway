@@ -21,6 +21,7 @@ from .checkers.answerprint import answers_path, collect_answers
 from .checkers.fingerprint import probe, reference_path
 from .config import Config, load
 from .logger import setup_logging
+from .pipelines import build_pipeline
 from .record import ingest_markdown, replay
 from .registry import build_checkers
 from .rules import RuleEngine, load_builtin_rules, load_rules, merge_rules
@@ -42,6 +43,11 @@ async def _collect(config_path: str, upstream_name: str, model: str, prompt: str
     upstream = next((u for u in cfg.upstreams if u.name == upstream_name), None)
     if upstream is None:
         raise SystemExit(f"配置里找不到 upstream {upstream_name!r}")
+    if "logprobs" not in build_pipeline(upstream).capabilities:
+        raise SystemExit(
+            f"上游 {upstream_name!r}（协议 {upstream.protocol}）不支持 logprobs，"
+            "声纹指纹无法采集——改用 satori answers 采集答案指纹"
+        )
 
     async with httpx.AsyncClient() as client:
         dist = await probe(client, upstream, model, cfg.fingerprint, prompt)

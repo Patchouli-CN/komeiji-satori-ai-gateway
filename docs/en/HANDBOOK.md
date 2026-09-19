@@ -7,7 +7,7 @@
 ## 1. Architecture
 
 ```
-client ──▶ [protocol adapters adapters/] ──▶ canonical form (OpenAI Chat) ──▶ [detection core] ──▶ upstream (OpenAI-compatible)
+client ──▶ [protocol adapters adapters/] ──▶ canonical form (OpenAI Chat) ──▶ [detection core] ──▶ [pipelines pipelines/] ──▶ upstream (OpenAI-compatible / native Anthropic)
           /v1/chat/completions (passthrough)     ├─ rule engine rules.py (every response)
           /v1/messages                           ├─ side-channels watch.py (tokenizer/billing/latency/hit-rate)
           /v1/responses                          ├─ periodic checkers checkers/ (voiceprint/answers/identity/canary)
@@ -26,7 +26,7 @@ Key point: **all detection works on the canonical form**. Whatever protocol the 
 | | `check_interval_seconds` | 300 | periodic checker interval |
 | | `cors_origins` | `["*"]` | dashboard CORS (local use) |
 | | `inject_usage` | true | auto-add `include_usage` to streaming requests (side-channel data source) |
-| `[[upstreams]]` | `name` / `base_url` / `api_key` / `models` | — | upstreams; `api_key` supports `env:VAR` |
+| `[[upstreams]]` | `name` / `base_url` / `api_key` / `models` / `protocol` | — | upstreams; `api_key` supports `env:VAR`; `protocol` defaults to `openai`, set `anthropic` for the native API (voiceprint channel is openai-protocol only) |
 | `[fingerprint]` | `reference_dir` | fingerprints | reference fingerprint directory |
 | | `probe_prompt` | "The capital of France is" | voiceprint probe |
 | | `top_logprobs` | 10 | distribution candidates (≤20) |

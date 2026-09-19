@@ -70,7 +70,7 @@ satori ingest 会话记录.md --out records/x.jsonl      # markdown 会话记录
 ## 多协议架构
 
 ```
-客户端 ──▶ [协议适配器] ──▶ 内部规范(OpenAI Chat) ──▶ [检测核心] ──▶ 上游(OpenAI 兼容)
+客户端 ──▶ [协议适配器] ──▶ 内部规范(OpenAI Chat) ──▶ [检测核心] ──▶ [管线] ──▶ 上游(OpenAI 兼容 / Anthropic 原生)
           /v1/messages                              规则·侧信道·账本
           /v1/responses                             录制·回放·事件流
           /v1/chat/completions(透传)
@@ -78,7 +78,7 @@ satori ingest 会话记录.md --out records/x.jsonl      # markdown 会话记录
 
 **客户端侧厂商无关**：Anthropic Messages、OpenAI Responses、OpenAI Chat 三种入口协议，由 `adapters/` 里的适配器统一翻译成内部规范；检测核心对协议一无所知，你说什么话觉大人都听得懂。新增协议 = 放一个模块 + `@register_adapter`，包扫描自动发现（与 checker 注册表同款）。
 
-**上游侧有意保持 OpenAI 兼容**：侦查对象（中转商、套壳商）为了兼容客户端全都说这个协议，网关说同一种话反而是伪装优势；原生 Anthropic/Gemini 上游走兼容层接入。
+**上游侧协议插件化**：默认 `protocol = "openai"` 覆盖 OpenAI 兼容端点——侦查对象（中转商、套壳商）为了兼容客户端全都说这个协议，网关说同一种话反而是伪装优势；设 `protocol = "anthropic"` 可直连 Anthropic 官方原生 API，由 `pipelines/` 的声明式 TransferPipeline 插件翻译（装饰器注册 + 包扫描自动发现，与 checker 注册表同款）。注意 logprobs 声纹通道仅 openai 协议上游可用，其余协议请用答案指纹（`[answerprint]`）。
 
 适配器 v1 范围：文本与图片内容、system/instructions、流式事件翻译；tools / function calling / thinking block 暂未翻译（检测照常工作，依赖工具调用的客户端请留意）。
 

@@ -17,6 +17,7 @@ from pathlib import Path
 import httpx
 
 from ..config import AnswerPrintConfig, FingerprintConfig, Upstream
+from ..pipelines import chat_once
 from ..registry import register_checker
 from . import CheckResult
 
@@ -42,19 +43,13 @@ async def ask(
     client: httpx.AsyncClient, upstream: Upstream, model: str,
     prompt: str, max_tokens: int,
 ) -> str:
-    resp = await client.post(
-        f"{upstream.base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {upstream.resolve_key()}"},
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": 0,
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"].get("content") or ""
+    data = await chat_once(client, upstream, {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0,
+    }, timeout=60)
+    return data["choices"][0]["message"].get("content") or ""
 
 
 async def collect_answers(

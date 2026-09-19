@@ -11,9 +11,11 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Upstream:
     name: str
-    base_url: str  # OpenAI 兼容的 /v1 根
+    base_url: str  # 上游 API 根，管线在其上拼协议端点（/chat/completions、/messages）
     api_key: str
     models: list[str] = field(default_factory=list)
+    # 上游协议：openai（默认，存量配置零改动）/ anthropic 原生等，由 pipelines/ 插件实现
+    protocol: str = "openai"
 
     def resolve_key(self) -> str:
         if self.api_key.startswith("env:"):

@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from ..config import FingerprintConfig, Upstream
+from ..pipelines import build_pipeline, chat_once
 from ..registry import register_checker
 from . import CheckResult
 
@@ -43,21 +44,15 @@ async def probe(
     prompt: str | None = None,
 ) -> dict[str, float]:
     """向上游请求探针 prompt，返回 {token: prob} 分布。"""
-    resp = await client.post(
-        f"{upstream.base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {upstream.resolve_key()}"},
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt or cfg.probe_prompt}],
-            "max_tokens": 1,
-            "temperature": 0,
-            "logprobs": True,
-            "top_logprobs": cfg.top_logprobs,
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    top = resp.json()["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
+    data = await chat_once(client, upstream, {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt or cfg.probe_prompt}],
+        "max_tokens": 1,
+        "temperature": 0,
+        "logprobs": True,
+        "top_logprobs": cfg.top_logprobs,
+    })
+    top = data["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
     return {item["token"]: math.exp(item["logprob"]) for item in top}
 
 
@@ -85,6 +80,11 @@ class FingerprintChecker:
     async def check(
         self, client: httpx.AsyncClient, upstream: Upstream, model: str
     ) -> CheckResult:
+        if "logprobs" not in build_pipeline(upstream).capabilities:
+            return CheckResult(
+                self.name, upstream.name, model, True, 0.0,
+                "上游协议不支持 logprobs，声纹通道跳过",
+            )
         ref_file = reference_path(self.cfg, upstream, model)
         if not ref_file.exists():
             return CheckResult(

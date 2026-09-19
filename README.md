@@ -72,7 +72,7 @@ satori ingest transcript.md --out records/x.jsonl    # convert markdown transcri
 ## Multi-Protocol Architecture
 
 ```
-client ──▶ [protocol adapter] ──▶ canonical form (OpenAI Chat) ──▶ [detection core] ──▶ upstream (OpenAI-compatible)
+client ──▶ [protocol adapter] ──▶ canonical form (OpenAI Chat) ──▶ [detection core] ──▶ [pipeline] ──▶ upstream (OpenAI-compatible / native Anthropic)
           /v1/messages                                    rules · side-channels · ledger
           /v1/responses                                   records · replay · event stream
           /v1/chat/completions (passthrough)
@@ -80,7 +80,7 @@ client ──▶ [protocol adapter] ──▶ canonical form (OpenAI Chat) ─�
 
 **Vendor-agnostic on the client side**: Anthropic Messages, OpenAI Responses, and OpenAI Chat entry protocols are translated into the canonical form by adapters in `adapters/`; the detection core knows nothing about protocols. New protocol = one module + `@register_adapter`, auto-discovered by package scan (same pattern as checkers).
 
-**Deliberately OpenAI-compatible on the upstream side**: our investigation targets (relay resellers, repackers) all speak this protocol to stay client-compatible — speaking the same language is itself camouflage. Native Anthropic/Gemini upstreams join via compatibility layers.
+**Pluggable protocols on the upstream side**: the default `protocol = "openai"` covers OpenAI-compatible endpoints — our investigation targets (relay resellers, repackers) all speak this protocol to stay client-compatible, and speaking the same language is itself camouflage. Set `protocol = "anthropic"` to talk to the native Anthropic Messages API, translated by plugins in `pipelines/` (declarative `TransferPipeline`: decorator registration + package-scan discovery, same pattern as checkers). Note the logprobs voiceprint channel only works on openai-protocol upstreams — use answer fingerprinting (`[answerprint]`) for the rest.
 
 Adapter v1 scope: text & image content, system/instructions, streaming event translation. Tools / function calling / thinking blocks are not yet translated (detection still works; tool-dependent clients take note).
 

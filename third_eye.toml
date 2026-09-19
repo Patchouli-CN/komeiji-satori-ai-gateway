@@ -15,6 +15,9 @@ file = "logs/satori.log"
 
 # 上游列表。api_key 支持 "env:VAR_NAME" 从环境变量读取。
 # models 列出该上游宣称提供的模型，网关按请求里的 model 路由。
+# protocol 指定上游协议：默认 "openai"（OpenAI 兼容端点）；
+# 设为 "anthropic" 可直连 Anthropic 官方 API 原生协议（pipelines/ 插件翻译）。
+# 注意：logprobs 声纹指纹通道仅 openai 协议上游可用，anthropic 上游请开 answerprint。
 [[upstreams]]
 name = "openai"
 base_url = "https://api.openai.com/v1"
@@ -25,6 +28,14 @@ models = ["gpt-4o", "gpt-4o-mini"]
 # name = "some-reseller"
 # base_url = "https://example.com/v1"
 # api_key = "env:RESELLER_KEY"
+# models = ["claude-opus-4"]
+
+# 直连 Anthropic 官方 API 的例子：
+# [[upstreams]]
+# name = "anthropic"
+# base_url = "https://api.anthropic.com/v1"
+# api_key = "env:ANTHROPIC_API_KEY"
+# protocol = "anthropic"
 # models = ["claude-opus-4"]
 
 # 指纹核验：对固定 prompt 取首 token 的 top-logprobs 分布，

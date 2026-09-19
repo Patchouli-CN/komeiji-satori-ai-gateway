@@ -19,6 +19,7 @@ import re
 import httpx
 
 from ..config import FingerprintConfig, IdentityConfig, Upstream
+from ..pipelines import chat_once
 from ..registry import register_checker
 from . import CheckResult
 from .fingerprint import js_divergence, reference_path
@@ -95,21 +96,15 @@ class IdentityProbeChecker:
     async def _ask(
         self, client: httpx.AsyncClient, upstream: Upstream, model: str, prompt: str
     ) -> tuple[str, dict[str, float]]:
-        resp = await client.post(
-            f"{upstream.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {upstream.resolve_key()}"},
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": self.cfg.max_tokens,
-                "temperature": 0,
-                "logprobs": True,
-                "top_logprobs": self.fp_cfg.top_logprobs,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        choice = resp.json()["choices"][0]
+        data = await chat_once(client, upstream, {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": self.cfg.max_tokens,
+            "temperature": 0,
+            "logprobs": True,
+            "top_logprobs": self.fp_cfg.top_logprobs,
+        }, timeout=60)
+        choice = data["choices"][0]
         content = choice["message"].get("content") or ""
         dist: dict[str, float] = {}
         lp = choice.get("logprobs")

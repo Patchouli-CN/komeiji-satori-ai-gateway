@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .adapters import Adapter, get_adapters
-from .baseline import BaselineManager
+from .baseline import BaselineLevel, BaselineManager, IDENTITY_CHECKER_WEIGHTS
 from .checkers import CheckResult, Checker
 from .config import Config
 from .levels import AlertLevel, level_of
@@ -36,8 +36,9 @@ log = logging.getLogger("satori")
 # 身份类核验通道失败注入身份账本的权重（v4 Phase 5A 维度隔离）：
 # 声纹/答案指纹是"是不是你"的证据，与质量类分开记账——测试 PASS 洗不掉。
 # 无参考时 checker 返回 score=0，天然跳过（BASIC 模式不积累）。
-# 权重保守：单次失败不足以独立熔断，持续对不上才会累积到阈值
-_IDENTITY_CHECKERS: dict[str, float] = {"fingerprint": 20.0, "answerprint": 10.0}
+# 权重本身以 baseline.py 的 IDENTITY_CHECKER_WEIGHTS 为单一事实源
+# （档次折损在 BaselineState.identity_weight），此处保留别名供既有测试引用
+_IDENTITY_CHECKERS = IDENTITY_CHECKER_WEIGHTS
 
 
 def _extract_request_text(body: bytes) -> str:
@@ -224,7 +225,14 @@ class KomeijiSatori:
     async def run_all_checks(self, client: httpx.AsyncClient) -> None:
         for upstream in self.config.upstreams:
             for model in upstream.models:
+                # 档次动作（v4 Phase 1.3）：每轮按最新基线状态决定监控强度。
+                # 三档不是仪表读数，是油门——STRICT 全通道、STANDARD 身份通道
+                # 半额记账、BASIC 身份通道连探针都不发（省 token 也不诬告）
+                bl = self.baselines.recompute(upstream.name, model)
                 for checker in self.checkers:
+                    if (bl.level is BaselineLevel.BASIC
+                            and checker.name in IDENTITY_CHECKER_WEIGHTS):
+                        continue  # BASIC：仅黑盒通道在岗
                     try:
                         r = await checker.check(client, upstream, model)
                     except Exception as exc:
@@ -246,13 +254,16 @@ class KomeijiSatori:
                     })
                     # 身份类通道失败注入身份账本（v4 开放讨论点定论：探针失败
                     # 要入账，但入的是身份账）。无参考时 score=0 天然跳过——
-                    # BASIC 模式不积累。权重保守：单次失败不足以独立熔断
+                    # BASIC 模式不积累。记账权重随判别档次折损（1.3 档次动作：
+                    # STANDARD 半价，别按满贯信任一份老参考）
                     if (not r.ok and r.score > 0
-                            and checker.name in _IDENTITY_CHECKERS):
+                            and checker.name in IDENTITY_CHECKER_WEIGHTS):
+                        weight = bl.identity_weight(checker.name)
+                        if weight <= 0:
+                            continue
                         await self._add_suspicion(
                             upstream.name, model,
-                            [{"rule": checker.name,
-                              "score": _IDENTITY_CHECKERS[checker.name],
+                            [{"rule": checker.name, "score": weight,
                               "field": "identity", "snippet": r.detail,
                               "description": "身份类核验失败（不可被测试 PASS 洗白）"}],
                             identity=True,

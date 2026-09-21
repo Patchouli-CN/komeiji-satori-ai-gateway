@@ -27,7 +27,7 @@ from satori_gateway.config import (
 from satori_gateway.security import H_ADMIN
 from satori_gateway.testing import LEVEL_SPEC, TestAdjudicator, TestReport
 
-from test_phase1 import ADMIN, KEY, build, env, issue
+from test_phase1 import ADMIN, KEY, build, env, issue, write_refs
 
 
 # ---- Phase 0.2 压力感知 ----
@@ -486,6 +486,7 @@ class TestIdentityLedgerWiring:
     def test_checker_failure_feeds_identity_ledger(self, tmp_path):
         from satori_gateway.app import _IDENTITY_CHECKERS
         satori, _ = build(tmp_path)
+        write_refs(satori)  # STRICT 档：身份通道满额在岗（档次动作见 test_tiers）
         satori.checkers = [FakeFingerprint()]
         asyncio.run(satori.run_all_checks(None))
         assert satori._decayed_identity(KEY) == pytest.approx(
@@ -503,6 +504,7 @@ class TestIdentityLedgerWiring:
     def test_identity_survives_persistence(self, tmp_path):
         from satori_gateway.state import StateStore
         satori, _ = build(tmp_path)
+        write_refs(satori)  # STRICT 档，让身份记账走得通
         satori.checkers = [FakeFingerprint()]
         asyncio.run(satori.run_all_checks(None))
         satori.state.flush(satori)

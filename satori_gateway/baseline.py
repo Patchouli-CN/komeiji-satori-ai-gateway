@@ -48,6 +48,13 @@ TRUST_STRICT = 0.8
 TRUST_STANDARD = 0.4
 TRUST_BASIC = 0.1
 
+# 身份类核验通道的满额记账权重（v4 Phase 5A 维度隔离的另一半）。
+# 单一事实源在这——app.py 只消费，不再 duplicated
+IDENTITY_CHECKER_WEIGHTS: dict[str, float] = {"fingerprint": 20.0,
+                                              "answerprint": 10.0}
+# STANDARD 档位的折损系数：基线老化/来源降权时，身份通道只配半额信任
+STANDARD_WEIGHT_FACTOR = 0.5
+
 
 class BaselineLevel(str, Enum):
     STRICT = "STRICT"
@@ -95,6 +102,20 @@ class BaselineState:
             "expired": self.expired, "retired_at": self.retired_at,
             "reference": self.reference,
         }
+
+    def identity_weight(self, checker_name: str) -> float:
+        """档次动作（v4 Phase 1.3）：身份通道的记账权重随判别档次衰减。
+
+        STRICT 全额——参考新鲜可信，对不上就是大罪；
+        STANDARD 半价——基线老化/来源降权，别按满贯信任一份老参考；
+        BASIC 归零——第三只眼对身份闭上，只留黑盒通道在岗。
+        """
+        base = IDENTITY_CHECKER_WEIGHTS.get(checker_name, 0.0)
+        if self.level is BaselineLevel.STANDARD:
+            return base * STANDARD_WEIGHT_FACTOR
+        if self.level is BaselineLevel.BASIC:
+            return 0.0
+        return base
 
 
 class BaselineManager:

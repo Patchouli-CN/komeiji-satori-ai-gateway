@@ -91,6 +91,50 @@ def replay(path: str | Path, engine: RuleEngine) -> ReplayReport:
     return report
 
 
+@dataclass
+class ToolTraceReport:
+    """Tool Call 链回放报告（v4 Phase 4 联动）。"""
+
+    total: int = 0
+    suspicious: int = 0
+    clean: int = 0
+    chains: list[dict] = field(default_factory=list)
+
+    def origins(self) -> list[dict]:
+        """每条可疑链的第一个突变步——回溯定位用。"""
+        return [c for c in self.chains
+                if c.get("slop_score", 0) > 0 and c.get("first_suspicious", -1) >= 0]
+
+
+def replay_tool_traces(path: str | Path) -> ToolTraceReport:
+    """逐步回放 Tool Call 链。
+
+    诚实的边界：流水里存的是**结构化事实**（tool / args_valid / args_bytes /
+    flags / score），不存原始 arguments（隐私与体量）——因此回放展示的是
+    捕获时的链与第一个突变步，可重新导出的只有 derivable 规则（断链/膨胀），
+    幻觉工具与复读以捕获时 flags 呈现。
+    """
+    report = ToolTraceReport()
+    p = Path(path)
+    if not p.exists():
+        return report
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        report.total += 1
+        if rec.get("slop_score", 0) > 0:
+            report.suspicious += 1
+        else:
+            report.clean += 1
+        report.chains.append(rec)
+    return report
+
+
 def ingest_markdown(
     path: str | Path, upstream: str = "import", model: str = "transcript"
 ) -> Iterator[dict]:

@@ -1,7 +1,7 @@
 # 覚のルール —— 用户私货规则
 #
 # 内置规则（厂商自报、伪装泄漏、口癖等 16 条）随包发布、始终加载，
-# 见 src/satori_gateway/builtin_rules.toml 的头部注释了解调研来源。
+# 见 satori_gateway/builtin_rules.toml 的头部注释了解调研来源。
 # 在这里写同名规则可覆盖内置（比如调分数），写新名字则追加。
 #
 # 字段说明：

@@ -115,6 +115,17 @@
   .badge.ok { background: rgba(126, 226, 168, .15); color: var(--green); }
   .badge.bad { background: rgba(255, 107, 129, .15); color: var(--red); }
 
+  /* 基线判别卡片 */
+  .bl-card { margin-bottom: 12px; font-size: 12.5px; }
+  .bl-head { display: flex; justify-content: space-between; margin-bottom: 4px; }
+  .bl-level { font-size: 11px; padding: 0 7px; border-radius: 9px; }
+  .bl-level.STRICT { background: rgba(126, 226, 168, .15); color: var(--green); }
+  .bl-level.STANDARD { background: rgba(255, 184, 107, .18); color: var(--orange); }
+  .bl-level.BASIC { background: rgba(255, 107, 129, .18); color: var(--red); font-weight: 700; }
+  .bl-meta { color: var(--dim); font-size: 11.5px; line-height: 1.6; }
+  .bl-meta .warn { color: var(--orange); }
+  .bl-meta .dead { color: var(--red); font-weight: 700; }
+
   /* 事件流 */
   #feed { max-height: 420px; overflow-y: auto; font-size: 12.5px; }
   .evt { padding: 7px 10px; border-left: 3px solid var(--border); margin-bottom: 6px; background: var(--panel2); border-radius: 0 6px 6px 0; }
@@ -130,6 +141,14 @@
   .evt.breaker .kind { color: var(--red); font-weight: 700; }
   .evt.level { border-left-color: var(--orange); background: rgba(255, 184, 107, .12); }
   .evt.level .kind { color: var(--orange); font-weight: 700; }
+  .evt.baseline { border-left-color: var(--lavender); }
+  .evt.baseline .kind { color: var(--lavender); }
+  .evt.ttl { border-left-color: var(--orange); }
+  .evt.ttl .kind { color: var(--orange); }
+  .evt.slop { border-left-color: var(--red); }
+  .evt.slop .kind { color: var(--red); font-weight: 700; }
+  .evt.test .kind { color: var(--blue); }
+  .evt.feedback .kind { color: var(--blue); }
   .evt .snip { display: block; color: var(--dim); margin-top: 3px; font-size: 11.5px; word-break: break-all; }
 </style>
 </head>
@@ -158,6 +177,17 @@
   <div class="panel">
     <h2>周期核验</h2>
     <div id="checks"><div class="empty">暂无核验结果</div></div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>基线判别 · 第三只眼的眼镜</h2>
+    <div id="baselines"><div class="empty">暂无基线 —— 还没找到参考</div></div>
+  </div>
+  <div class="panel">
+    <h2>试炼裁决 · Slop 链级</h2>
+    <div id="trials"><div class="empty">暂无测试上报</div></div>
   </div>
 </div>
 
@@ -196,12 +226,15 @@ function renderSuspicion(list, breakerSet = new Set()) {
     const over = (s.score >= s.threshold || tripped) ? " over" : "";
     const lvl = s.level ? `<span class="lvl ${s.level}">${s.level}</span>` : "";
     const badge = tripped ? ' <span style="color:var(--red);font-weight:700">🚫已熔断</span>' : "";
+    const split = (s.identity || s.quality)
+      ? `<div class="bl-meta">质量 ${s.quality || 0} + 身份 ${s.identity || 0}（身份洗不掉）</div>` : "";
     return `<div class="susp-card${over}">
       <div class="susp-head">
         <span class="who">${key}${lvl}${badge}</span>
         <span class="num">${s.score} / ${s.threshold}</span>
       </div>
       <div class="bar"><div style="width:${pct}%"></div></div>
+      ${split}
     </div>`;
   }).join("");
   // 已熔断但账本已清零的（score=0 不复位前仍展示）
@@ -232,6 +265,61 @@ function renderChecks(list) {
   </table>`;
 }
 
+function renderBaselines(list) {
+  const box = $("baselines");
+  if (!list.length) {
+    box.innerHTML = '<div class="empty">暂无基线 —— 第三只眼还没找到参考</div>';
+    return;
+  }
+  box.innerHTML = list.map(b => {
+    const cold = b.cold_start
+      ? ' <span class="bl-level" style="background:rgba(126,226,255,.15);color:var(--blue)">🐣 启蒙中</span>' : "";
+    const closed = b.level === "BASIC"
+      ? ' <span style="color:var(--red);font-weight:700">👁 已闭合</span>' : "";
+    const retired = b.retired_at
+      ? ` <span style="color:var(--red)">退役于 ${fmtTime(b.retired_at)}</span>` : "";
+    let ttl = "无参考时间", ttlCls = "";
+    if (b.ttl) {
+      ttl = `${b.ttl.age_days}/${b.ttl.ttl_days}天（${(b.ttl.consumed * 100).toFixed(0)}%）`;
+      ttlCls = b.ttl.state === "expired" ? "dead"
+        : (b.ttl.state === "fresh" ? "" : "warn");
+    }
+    return `<div class="bl-card">
+      <div class="bl-head">
+        <span class="who">${b.upstream}/${b.model}${cold}${closed}</span>
+        <span class="bl-level ${b.level}">${b.level}</span>
+      </div>
+      <div class="bl-meta">来源 ${b.source}${b.pressure ? "·" + b.pressure : ""}
+        · 信任 ${b.trust} · TTL <span class="${ttlCls}">${ttl}</span>
+        · ${b.reference || "无参考"}${retired}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderTrials(tests, slop) {
+  const box = $("trials");
+  const parts = [];
+  if (tests && tests.length) {
+    parts.push(`<table>
+      <tr><th>套件 :: 测试</th><th>归属</th><th>通过/总数</th></tr>
+      ${tests.map(t => `<tr>
+        <td>${t.test_suite} :: ${t.test_name}${t.unreliable
+          ? ' <span class="bl-level BASIC">flaky</span>' : ""}</td>
+        <td>${t.upstream}/${t.model}</td>
+        <td>${t.total - t.failed}/${t.total}${t.failed ? " ✗" + t.failed : ""}</td>
+      </tr>`).join("")}
+    </table>`);
+  } else {
+    parts.push('<div class="empty">暂无测试上报 —— pytest -p satori_gateway.pytest_plugin '
+      + '或 satori-test-report 接入</div>');
+  }
+  if (slop && slop.length) {
+    parts.push(`<div class="bl-meta" style="margin-top:8px">Slop 怀疑累积：${slop.map(s =>
+      `${s.session} ×${s.suspicious_steps}`).join("，")}（同 session 累计 2 步即实锤）</div>`);
+  }
+  box.innerHTML = parts.join("");
+}
+
 function addEvent(e) {
   const feed = $("feed");
   const ph = feed.querySelector(".empty");
@@ -254,6 +342,22 @@ function addEvent(e) {
       : `${e.upstream}/${e.model} 熔断器已人工复位`;
   } else if (e.type === "level") {
     body = `${e.upstream}/${e.model} 报警等级 ${e.from} → ${e.to}（可疑度 ${e.total}）`;
+  } else if (e.type === "baseline") {
+    body = e.state === "retired"
+      ? `${e.upstream}/${e.model} 基线退役归档——BASIC 模式，仅黑盒通道在岗（${e.reporter || ""}）`
+      : `${e.upstream}/${e.model} 身份类嫌疑解冻（operator ${e.reporter || ""} 裁决）`;
+  } else if (e.type === "ttl") {
+    body = `${e.upstream}/${e.model} ${e.warning || e.state}`
+      + (e.ttl_days != null ? `（${e.age_days}/${e.ttl_days}天）` : "");
+  } else if (e.type === "feedback") {
+    body = `${e.upstream}/${e.model} 反馈（${e.reason}）→ ${e.action}（${e.reporter || ""}）`;
+  } else if (e.type === "test") {
+    body = `${e.upstream}/${e.model} 试炼 ${e.suite}::${e.name} [${e.level}] ${e.status} → ${e.action}`;
+  } else if (e.type === "slop") {
+    body = e.state === "confirmed"
+      ? `覚「偽りの魂に、真の力は宿らない」 ${e.upstream}/${e.model} Slop 实锤`
+        + `（session ${e.session}，起源 ${e.origin_trace} 步#${e.origin_step}）`
+      : `${e.upstream}/${e.model} 工具链可疑 score=${e.slop_score}（首个突变步 #${e.first_suspicious}）`;
   } else if (e.type === "snapshot") {
     body = "已同步全量快照";
   }
@@ -282,9 +386,13 @@ async function refreshStatus(base) {
     const breakerSet = new Set((data.breakers || []).map(b => b.upstream + "/" + b.model));
     renderSuspicion(Object.values(suspicionMap), breakerSet);
     renderChecks(data.checks);
+    renderBaselines(data.baselines || []);
+    renderTrials(data.tests, data.slop);
   } catch (err) {
-    addEvent({ type: "alert", ts: Date.now() / 1000, upstream: "-", model: "-",
-               total: 0, threshold: 0, detail: "status 拉取失败: " + err });
+    // 拉不到状态（网关不在/重连中）：不往事件流塞警报——
+    // 连接状态由左上角指示灯与文字负责，事件流只承载服务端推送的事件。
+    // （此前每次重连循环都会在这里刷一条 alert，断开时满屏假警报）
+    console.debug("[satori] status 拉取失败:", err);
   }
 }
 
@@ -309,8 +417,9 @@ function connect() {
       const th = (suspicionMap[key] || {}).threshold || 50;
       suspicionMap[key] = { upstream: e.upstream, model: e.model, score: e.total, threshold: th };
       renderSuspicion(Object.values(suspicionMap));
-    } else if (e.type === "snapshot") {
-      refreshStatus(base);
+    } else if (e.type === "snapshot" || e.type === "baseline" || e.type === "ttl"
+        || e.type === "test" || e.type === "slop" || e.type === "feedback") {
+      refreshStatus(base);  // 这些事件改的是状态面板，拉一次全量最稳
     }
   };
   ws.onclose = () => {

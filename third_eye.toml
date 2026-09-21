@@ -86,8 +86,52 @@ directory = "records"
 # 熔断器：可疑度越界后拦截该 上游×模型 的后续请求（503），
 # 低质量输出实时停工、不污染项目；人工确认后
 # POST /satori/breaker/reset {"upstream":"...","model":"..."} 复位
+# （需要 operator 角色凭据，见下方 [security]）
 [breaker]
 enabled = true
+
+# 控制面封印授权（Gate 0 / Phase 6A+6B——v4 交付顺序的第一道门）：
+#   签发/查询/吊销  → /satori/admin/*（X-Satori-Admin-Secret 把关）
+#   feedback/breaker reset 等操作按角色授权：reporter / operator / admin
+# HMAC 签名约定：三枚请求头 X-Satori-Reporter / X-Satori-Timestamp / X-Satori-Signature，
+#   签名 = HMAC-SHA256(secret, "<timestamp>.<原始请求体>")，时间窗默认 5 分钟防重放。
+# Ed25519 模式（Phase 6G）：method = "ed25519" 签发时附 public_key（PEM），
+#   reporter 侧用私钥签 canonical_json{reporter_id, timestamp, nonce, body_hash}，
+#   请求头加 X-Satori-Nonce（一次性）。多团队跨网场景推荐，配 require_tls。
+# enabled = false 时控制面不鉴权（启动打醒目警告）——不安全必须显式选择。
+[security]
+enabled = true
+mode = "hmac"
+timestamp_window_seconds = 300
+db = "state/credentials.db"
+# 回环地址下留空：首次启动生成一次性引导 token（只打印一次），
+# 用它 POST /satori/admin/credentials 签发第一个 operator 凭据；
+# 非回环地址下必须配置，否则拒绝启动。
+admin_secret = "env:SATORI_ADMIN_SECRET"
+# TLS 前置（Phase 6F）：不配 = 按 host 联动（回环免 TLS、非回环强制）；
+# true/false 显式指定。只影响 /satori/*，代理路径不受影响。
+# require_tls = true
+# 信任的反向代理 IP 段（CIDR）：只有这些来源的 X-Forwarded-Proto 才采信。
+# trusted_proxies = ["10.0.0.0/8", "192.168.1.10"]
+
+# 审计状态持久化（v4 Phase 1.0）：重启不失忆——审计状态是时间函数。
+#   state/ledger.json            账本/熔断快照（防抖落盘 + 原子替换）
+#   state/feedback.jsonl         误报反馈流水（replay 可关联翻旧账）
+#   state/baseline_events.jsonl  基线事件流水（Phase 2 动态 TTL 的数据源）
+# archive_dir 存放退役归档的参考基线（含 meta.json 留痕）。
+[state]
+directory = "state"
+debounce_seconds = 1.0
+archive_dir = "archive/baselines"
+
+# 业务测试上报裁决（v4 Phase 5A——质量锚点）。POST /satori/test/report
+# 需要 reporter 角色凭据；TRUSTED 的 PASS 才衰减嫌疑分、FAIL 才可熔断。
+# score_floor 是负分地板：PASS 衰减不得把总分（质量+身份）压到这以下。
+# 维度隔离：PASS 只洗质量类；身份类（声纹/答案指纹）洗不掉，
+# 解冻只能重新采集基线或 operator 裁决（POST /satori/baseline/identity-cleared）。
+[testing]
+enabled = true
+score_floor = 5.0
 
 # 金丝雀：固定考题 + 期望子串，周期性抽查输出质量漂移
 [[canary.cases]]

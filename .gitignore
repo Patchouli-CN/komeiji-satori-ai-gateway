@@ -8,7 +8,18 @@ __pycache__/
 build/
 dist/
 
+# 测试残留
+.pytest_cache/
+.pytest-tmp/
+pytest-cache-files-*/
+
 # 运行时数据：录制流量和参考指纹不进仓库（可能含对话内容和端点信息）
 records/
 fingerprints/
 logs/
+
+# 控制面凭据库与审计状态（含 HMAC secret 原文，绝对不进仓库）
+state/
+
+# 想法文件
+/docs/thinks/

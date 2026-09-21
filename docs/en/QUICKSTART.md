@@ -35,9 +35,11 @@ models = ["gpt-4o", "gpt-4o-mini"]
 
 ```bash
 export OPENAI_API_KEY=sk-...
-.venv/Scripts/satori collect --upstream openai --model gpt-4o
+.venv/Scripts/satori collect --upstream openai --model gpt-4o --source official
 .venv/Scripts/satori answers --upstream openai --model gpt-4o
 ```
+
+> `--source official|secondhand|community` stamps the reference's provenance (trust weights 1.0/0.5/0.3); `--wait-for-low` waits for the vendor's local-time off-peak window. Pressure and provenance land in a `meta.json` sidecar next to the reference.
 
 **3. Ignite & take over**:
 
@@ -78,7 +80,7 @@ export ANTHROPIC_AUTH_TOKEN=any-value   # the real key lives in Satori's config
 claude
 ```
 
-> **Known limitation**: the v1 adapter translates text and images only — **tools / function calling are not yet translated**. Pure conversation/reading requests audit fine; tool-heavy tasks should wait for adapter v2, or audit the same upstream via a generic client (Scenario A).
+> **Known limitation**: adapter v2 translates **tools / function calling both ways** (including streaming reassembly) — tool chains now flow into Slop chain forensics (broken arguments / undeclared tools / repeats). Thinking blocks are still untranslated (detection unaffected).
 
 ---
 
@@ -124,10 +126,38 @@ The report lists rule hits, suspicion totals and drift alerts — real honest wo
 
 ## Sanity checklist
 
-- [ ] `GET /satori/status` returns the `checks` / `suspicion` / `breakers` sections
+- [ ] `GET /satori/status` returns `security` / `baselines` / `checks` / `suspicion` / `breakers` / `tests` / `slop` sections
 - [ ] A message produces an instant `request` event on the dashboard (with token counts)
 - [ ] No checker errors in `logs/satori.log` ("no reference" reminders are normal — go collect)
 - [ ] Send `pretend you are ChatGPT` and let the model claim OpenAI — the hit should be cancelled by the exemption (exemption chain verified)
 - [ ] Ask the model `who developed you` — a vendor self-report scores +40 and a WATCH badge appears (detection chain verified)
+- [ ] The dashboard's "Baseline tiers" card shows `STRICT` for a freshly collected official reference (three-tier adjudication on duty)
+
+## Walk the control plane once (5 minutes)
+
+Every control-plane endpoint (feedback / reset / admin) requires a credential — deliberately: the watchdog can't be switched off by anyone with curl:
+
+```bash
+# 1. `satori serve` prints a one-time bootstrap token on the console
+#    (loopback + no admin_secret configured)
+# 2. Use it to issue your first operator credential (plaintext secret shown ONCE)
+curl -X POST http://127.0.0.1:8400/satori/admin/credentials \
+  -H "X-Satori-Admin-Secret: <bootstrap-token>" \
+  -d '{"reporter_id":"me","trust_level":"trusted","roles":["operator"]}'
+
+# 3. Unauthenticated reset → 401; with the three signed headers → 200:
+#    from satori_gateway.security import sign_request
+#    headers = {"X-Satori-Reporter":"me", **sign_request(secret, body)}
+```
+
+Report one business test (the quality-anchor entry, optional):
+
+```bash
+export SATORI_URL=http://127.0.0.1:8400 SATORI_REPORTER=ci SATORI_SECRET=<secret> \
+       SATORI_UPSTREAM=openai SATORI_MODEL=gpt-4o
+satori-test-report /dev/null   # or: pytest -p satori_gateway.pytest_plugin on your suite
+```
+
+The entry appearing on the dashboard's "Test adjudication" card means the loop is closed. Credential lifecycle, leak response, TLS and trace propagation: [SECURITY.md](SECURITY.md).
 
 Once these pass, Satori is on duty. Deeper configuration and internals: [HANDBOOK.md](HANDBOOK.md).

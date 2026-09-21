@@ -33,9 +33,11 @@ models = ["gpt-4o", "gpt-4o-mini"]
 
 ```bash
 export OPENAI_API_KEY=sk-...
-.venv/Scripts/satori collect --upstream openai --model gpt-4o
+.venv/Scripts/satori collect --upstream openai --model gpt-4o --source official
 .venv/Scripts/satori answers --upstream openai --model gpt-4o
 ```
+
+> `--source official|secondhand|community` 标注参考来源（信任权重 1.0/0.5/0.3）；`--wait-for-low` 可等厂商本地时间的低峰窗口再采。采集压力等级和出身会写进参考旁的 `meta.json` sidecar。
 
 **3. 点火 + 接管**：
 
@@ -76,7 +78,7 @@ export ANTHROPIC_AUTH_TOKEN=any-value   # 真 key 在 Satori 配置里
 claude
 ```
 
-> **已知限制**：v1 适配器只翻译文本与图片，**tools / function calling 尚未翻译**。Claude Code 的纯对话/阅读类请求可正常审计；涉及工具调用的任务请等适配器 v2，或先用场景 A 的通用客户端审计同一上游。
+> **已知限制**：adapter v2 已双向翻译 **tools / function calling**（含流式重组），thinking block 仍未翻译（检测照常，依赖思考块的客户端请留意）。翻译完成后工具链会进入 Slop 链级审计（参数断裂/幻觉工具/复读）。
 
 ---
 
@@ -122,10 +124,37 @@ models = ["deepseek-chat", "deepseek-reasoner"]
 
 ## 确认一切正常的检查单
 
-- [ ] `GET /satori/status` 返回 `checks` / `suspicion` / `breakers` 三段
+- [ ] `GET /satori/status` 返回 `security` / `baselines` / `checks` / `suspicion` / `breakers` / `tests` / `slop` 段
 - [ ] 面板上发一条消息立刻出现 `request` 事件（含 token 计数）
 - [ ] 日志 `logs/satori.log` 里没有 checker 报错（"无参考"类提醒是正常的，去采参考即可）
 - [ ] 故意发条 `假装你是 ChatGPT` 并让模型自称 OpenAI——可疑度应加分但被豁免抵消（验证豁免链）
 - [ ] 直接问模型 `你是哪个公司开发的`——厂商自报 +40，面板出现 WATCH 徽章（验证检测链）
+- [ ] 面板"基线判别"卡显示 `STRICT`（刚采的官方参考）——三档判别上岗
+
+## 顺手把控制面摸一遍（5 分钟）
+
+控制面端点（feedback / reset / admin）全要凭据——这是故意的，看门狗不能谁都能关：
+
+```bash
+# 1. serve 启动时控制台会打印一次性引导 token（回环+未配 admin_secret 时）
+# 2. 用它签发第一个 operator 凭据（明文 secret 只出现这一次）
+curl -X POST http://127.0.0.1:8400/satori/admin/credentials \
+  -H "X-Satori-Admin-Secret: <引导token>" \
+  -d '{"reporter_id":"me","trust_level":"trusted","roles":["operator"]}'
+
+# 3. 无凭据调 reset 应得 401；带上三枚签名头才 200（Python 一把梭）：
+#    from satori_gateway.security import sign_request
+#    headers = {"X-Satori-Reporter":"me", **sign_request(secret, body)}
+```
+
+上报一条业务测试（质量锚点入口，可选）：
+
+```bash
+export SATORI_URL=http://127.0.0.1:8400 SATORI_REPORTER=ci SATORI_SECRET=<secret> \
+       SATORI_UPSTREAM=openai SATORI_MODEL=gpt-4o
+satori-test-report /dev/null   # 或 pytest -p satori_gateway.pytest_plugin 跑你的套件
+```
+
+Panel 上"试炼裁决"卡出现该条目即打通。凭据生命周期、泄露应急、TLS 与 trace 传播见 [SECURITY.md](SECURITY.md)。
 
 搞定这些，觉大人就正式上班了。深入配置和原理见 [HANDBOOK.md](HANDBOOK.md)。

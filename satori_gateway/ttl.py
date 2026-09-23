@@ -68,6 +68,7 @@ def reject_outliers(values: list[float], sigmas: float = 3.0) -> list[float]:
 
 @dataclass(frozen=True)
 class TtlVerdict:
+    upstream: str
     model: str
     ttl_days: float
     age_days: float
@@ -78,15 +79,25 @@ class TtlVerdict:
 
     def to_dict(self) -> dict:
         return {
-            "model": self.model, "ttl_days": round(self.ttl_days, 1),
+            "upstream": self.upstream, "model": self.model,
+            "ttl_days": round(self.ttl_days, 1),
             "age_days": round(self.age_days, 1),
             "consumed": round(self.consumed, 3),
             "state": self.state, "source": self.source, "events": self.events,
         }
 
 
+def _okey(upstream: str, model: str) -> str:
+    """override 持久化键。上游名不含 |（与 state.py 账本键同一约定）。"""
+    return f"{upstream}|{model}"
+
+
 class TtlEngine:
-    """每个模型一个保质期。override 可临时锁定（操作员工具，落盘持久）。"""
+    """每个 上游×模型 一个保质期。override 可临时锁定（操作员工具，落盘持久）。
+
+    键是 (upstream, model) 不是裸 model：官方与中转跑同名模型时，
+    事件/锁定/预警各走各的账，互不串味。
+    """
 
     def __init__(self, state: StateStore | None = None,
                  overrides_file: Path | None = None) -> None:
@@ -94,7 +105,7 @@ class TtlEngine:
         self.overrides_file = overrides_file or (
             state.directory / "ttl_overrides.json" if state else None)
         self._overrides: dict[str, dict] = {}
-        self._emitted: dict[str, str] = {}  # model -> 已点灯的状态（去重）
+        self._emitted: dict[tuple[str, str], str] = {}  # (up, model) -> 已点灯状态
         self._load_overrides()
 
     # ---- override 持久化 ----
@@ -116,57 +127,67 @@ class TtlEngine:
             json.dumps(self._overrides, ensure_ascii=False, indent=2),
             encoding="utf-8")
 
-    def override(self, model: str, ttl_days: float | None = None,
+    def override(self, upstream: str, model: str,
+                 ttl_days: float | None = None,
                  expires_at: float | None = None, reason: str = "") -> dict:
         """锁定 TTL。ttl_days 固定天数；expires_at 绝对时间点（先到先得）。"""
-        record = {"model": model, "reason": reason,
+        record = {"upstream": upstream, "model": model, "reason": reason,
                   "set_at": time.time(), "ttl_days": ttl_days,
                   "expires_at": expires_at}
-        self._overrides[model] = record
+        self._overrides[_okey(upstream, model)] = record
         self._save_overrides()
-        log.info("[ttl] %s 手动锁定保质期：ttl_days=%s expires_at=%s（%s）",
-                 model, ttl_days, expires_at, reason or "未注明")
+        log.info("[ttl] %s/%s 手动锁定保质期：ttl_days=%s expires_at=%s（%s）",
+                 upstream, model, ttl_days, expires_at, reason or "未注明")
         return record
 
-    def clear_override(self, model: str) -> bool:
-        if model in self._overrides:
-            del self._overrides[model]
+    def clear_override(self, upstream: str, model: str) -> bool:
+        key = _okey(upstream, model)
+        if key in self._overrides or model in self._overrides:
+            self._overrides.pop(key, None)
+            self._overrides.pop(model, None)  # 旧格式（裸 model 键）一并清
             self._save_overrides()
             return True
         return False
 
-    def override_of(self, model: str) -> dict | None:
-        """当前生效的手动锁定记录（status 透出用）。"""
-        return self._overrides.get(model)
+    def override_of(self, upstream: str, model: str) -> dict | None:
+        """当前生效的手动锁定记录（status 透出用）。
 
-    def _override_ttl(self, model: str, now: float) -> float | None:
-        rec = self._overrides.get(model)
+        旧格式文件里的裸 model 键按通配匹配（升级兼容：当时的锁定语义
+        就是"这个模型"，读出来后首次覆盖写会迁移成复合键）。
+        """
+        return self._overrides.get(_okey(upstream, model),
+                                   self._overrides.get(model))
+
+    def _override_ttl(self, upstream: str, model: str,
+                      now: float) -> float | None:
+        rec = self.override_of(upstream, model)
         if not rec:
             return None
         if rec.get("expires_at") and now > rec["expires_at"]:
-            self.clear_override(model)  # 过期自动解锁，回归学习值
+            self.clear_override(upstream, model)  # 过期自动解锁，回归学习值
             return None
         return float(rec["ttl_days"]) if rec.get("ttl_days") else None
 
     # ---- 学习 ----
 
-    def intervals(self, model: str) -> list[float]:
+    def intervals(self, upstream: str, model: str) -> list[float]:
         """相邻基线事件的天数间隔。事件太少学不到东西——这是常态，不硬学。"""
         if self.state is None:
             return []
-        events = self.state.read_baseline_events(model=model)
+        events = self.state.read_baseline_events(model=model, upstream=upstream)
         if len(events) < 2:
             return []
         ts = sorted(e.get("ts", 0.0) for e in events)
         return [(b - a) / 86400 for a, b in zip(ts, ts[1:]) if b > a]
 
-    def ttl_for(self, model: str, now: float | None = None) -> tuple[float, str, int]:
+    def ttl_for(self, upstream: str, model: str,
+                now: float | None = None) -> tuple[float, str, int]:
         """(ttl_days, source, events)。override > 学习中位数 > 冷启动固定值。"""
         now = now if now is not None else time.time()
-        override = self._override_ttl(model, now)
+        override = self._override_ttl(upstream, model, now)
         if override is not None:
-            return override, "override", len(self.intervals(model))
-        raw = self.intervals(model)
+            return override, "override", len(self.intervals(upstream, model))
+        raw = self.intervals(upstream, model)
         n = len(raw)
         if n < 3:
             return COLD_START_TTL_DAYS, "cold-start", n
@@ -189,24 +210,25 @@ class TtlEngine:
             return "aging"
         return "fresh"
 
-    def verdict(self, model: str, collected_at: float | None,
+    def verdict(self, upstream: str, model: str, collected_at: float | None,
                 now: float | None = None) -> TtlVerdict | None:
         """无采集时间的基线（无参考/存量无 sidecar）不判定——它本来就 BASIC。"""
         if not collected_at:
             return None
         now = now if now is not None else time.time()
-        ttl_days, source, events = self.ttl_for(model, now)
+        ttl_days, source, events = self.ttl_for(upstream, model, now)
         age_days = max(0.0, (now - collected_at) / 86400)
         consumed = age_days / ttl_days if ttl_days > 0 else 0.0
-        return TtlVerdict(model, ttl_days, age_days, consumed,
+        return TtlVerdict(upstream, model, ttl_days, age_days, consumed,
                           self._state_of(consumed), source, events)
 
     def due_warnings(self, verdict: TtlVerdict) -> str | None:
         """状态翻转才点灯（去重）。返回该点的灯，None 表示无需广播。"""
-        prev = self._emitted.get(verdict.model)
+        key = (verdict.upstream, verdict.model)
+        prev = self._emitted.get(key)
         if verdict.state == prev:
             return None
-        self._emitted[verdict.model] = verdict.state
+        self._emitted[key] = verdict.state
         if verdict.state == "aging":
             return (f"TTL 消耗 {verdict.consumed:.0%}——基线步入老化，"
                     f"建议近期重新 collect（还剩 {verdict.ttl_days - verdict.age_days:.0f} 天）")

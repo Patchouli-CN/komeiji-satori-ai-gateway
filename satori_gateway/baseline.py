@@ -72,11 +72,15 @@ def level_for(trust: float) -> BaselineLevel:
 
 def trust_score(source_w: float, pressure_w: float,
                 age_days: float, ttl_days: float) -> float:
-    """W_source × W_pressure × max(0, 1 - age/TTL)^γ"""
+    """W_source × W_pressure × max(0, 1 - age/TTL)^γ，钳制在 [0, 1]。
+
+    age 为负（collected_at 在未来，比如时钟回拨/导入异地基线）时
+    decay 会大于 1——那不是"超新鲜"，只是数据异常，按满分封顶。
+    """
     if ttl_days <= 0:
         return 0.0
     decay = max(0.0, 1.0 - age_days / ttl_days)
-    return source_w * pressure_w * (decay ** GAMMA)
+    return min(1.0, max(0.0, source_w * pressure_w * (decay ** GAMMA)))
 
 
 @dataclass
@@ -178,17 +182,25 @@ class BaselineManager:
     def recompute(self, upstream: str, model: str) -> BaselineState:
         key = (upstream, model)
         source, pressure, collected_at = self._provenance(key)
-        refs = [p for p in self._reference_paths(key) if p.exists()]
-        ttl_days = (self.ttl_engine.ttl_for(model)[0]
+        fp_path, ans_path = self._reference_paths(key)
+        refs = [p for p in (fp_path, ans_path) if p.exists()]
+        ttl_days = (self.ttl_engine.ttl_for(upstream, model)[0]
                     if self.ttl_engine is not None else DEFAULT_TTL_DAYS)
         st = BaselineState(
             upstream=upstream, model=model,
             source=source, pressure=pressure, collected_at=collected_at,
             ttl_days=ttl_days,
-            reference=("fingerprint" if refs and refs[0].exists()
-                       else "answers" if refs else None),
+            # 按实际存在的文件标注：answers-only 基线不是 fingerprint
+            reference=("fingerprint" if fp_path.exists()
+                       else "answers" if ans_path.exists() else None),
         )
         retired_at = self._archive_meta(key).get("retired_at")
+        if retired_at and refs:
+            # 退役后重采过（参考文件比退役标记新）→ 退役标记失效，
+            # 别再挂着它让 startup_report 误报 BASIC
+            newest_ref = max(p.stat().st_mtime for p in refs)
+            if newest_ref > retired_at:
+                retired_at = None
         if retired_at:
             st.retired_at = retired_at
         if not refs:
@@ -249,9 +261,10 @@ class BaselineManager:
 
     # ---- 冷启动与反馈计量（v4 Phase 0.5） ----
 
-    def is_cold_start(self, model: str) -> bool:
-        """有效基线事件 < 3 条即冷启动期。"""
-        return len(self.state.read_baseline_events(model=model)) < 3
+    def is_cold_start(self, upstream: str, model: str) -> bool:
+        """该 上游×模型 的有效基线事件 < 3 条即冷启动期。"""
+        return len(self.state.read_baseline_events(
+            model=model, upstream=upstream)) < 3
 
     def official_update_confirms(self, upstream: str, model: str,
                                  since: float | None) -> int:
@@ -260,6 +273,8 @@ class BaselineManager:
             1 for r in self.state.read_feedback()
             if r.get("upstream") == upstream and r.get("model") == model
             and r.get("reason") == "official_update" and r.get("confirm")
+            # 重放去重拦下的 confirm 留痕但不计数——不然刷计数照样能退役
+            and r.get("action") != "confirm-deduped"
             and r.get("ts", 0) > since
         )
 

@@ -118,7 +118,7 @@
 
 - `W_source`：溯权权重——official 1.0 / secondhand 0.5 / community 0.3（缺失 sidecar 按 secondhand）。**来源先于时机**：二手端点采的"官方参考"只是一份漂亮的二手真相
 - `W_pressure`：采集时压力——LOW/MID 1.0 / HIGH 0.6 / EXTR 0.0（按厂商本地时区的流量模式）
-- `age/TTL`：TTL 由 `ttl.py` 从真实事件学习（中位数 × 0.9/0.7，钳制 [7d, 180d]）；冷启动固定 30 天
+- `age/TTL`：TTL 由 `ttl.py` 从真实事件学习（中位数 × 0.9/0.7，钳制 [7d, 180d]）；冷启动固定 30 天；学习/锁定/预警都按 **上游×模型** 各自记账（官方与中转同名模型不串味）
 
 **三档判别动作**（档次是油门，不是仪表读数）：
 
@@ -128,14 +128,14 @@
 | `STANDARD` | 0.4 ≤ trust < 0.8 | **半额**记账（10/5） | 基线老化/来源降权，不按满贯信任老参考 |
 | `BASIC` | 无参考 / 已退役 / trust < 0.4 | **闭嘴**——连探针都不发 | 只留黑盒通道（身份探针/金丝雀/规则/侧信道）；省 token 也不诬告 |
 
-**退役闭环**：`POST /satori/baseline/feedback`（reporter 角色）提交 `official_update` 确认——reporter 累积 N=3（冷启动 1 次）或 operator ×1 → 参考归档到 `archive/baselines/`（含 meta.json 留痕）→ 该 上游×模型 降级 BASIC。`network_jitter`/`false_alarm` 只清账本不退役。**TTL 到期只点灯（70% 黄 / 90% 橙 / 100% 红），永不自动退役**——预测不误杀，退役必经地面真值。
+**退役闭环**：`POST /satori/baseline/feedback`（reporter 角色）提交 `official_update` 确认——reporter 累积 N=3（冷启动 1 次）或 operator ×1 → 参考归档到 `archive/baselines/`（含 meta.json 留痕）→ 该 上游×模型 降级 BASIC。`network_jitter`/`false_alarm` 只清账本不退役。**TTL 到期只点灯（70% 黄 / 90% 橙 / 100% 红），永不自动退役**——预测不误杀，退役必经地面真值。退役后重新 `collect`/`answers` 采集，退役标记自动失效（参考文件比退役时间新即忽略），恢复按可信度判别。
 
 ### 3.9 业务测试裁决（testing.py）——质量锚点
 
-- **上报**：`POST /satori/test/report`（reporter 角色）；字段 `trace_id/test_suite/test_name/level/status/attempt/failure_diff/model_claimed/upstream`；幂等键 = trace_id+test_name+attempt（重启后从流水重建）
+- **上报**：`POST /satori/test/report`（reporter 角色）；字段 `trace_id/test_suite/test_name/level/status/attempt/failure_diff/model_claimed/upstream`；幂等键 = reporter_id+trace_id+test_name+attempt（重启后从流水重建）——可预测的 trace_id 不会被抢先上报封杀
 - **分级**：L0 确定性断言（N=3，注入 15，PASS 衰减 10）/ L1 语义等价（N=5，10，5）/ L2 复杂推理（N=7，8，2）/ L3 开放式不计分
-- **滑窗**：最近 M=N×3 次里失败 ≥ N 次才触发；**flaky 自动标记**（失败率 >5% 且样本 ≥20 → unreliable 只记录不裁决）
-- **两轴门控**：信任轴（TRUSTED 的 PASS 才衰减、FAIL 才享"跨线优先"注入 DEGRADED 级嫌疑并可立即熔断；NORMAL 只加等级分值；UNVERIFIED 仅记录）× 信号轴（PASS 只洗质量类、洗不穿负分地板）
+- **滑窗**：最近 M=N×3 次里失败 ≥ N 次才触发；**flaky 自动标记**（失败率 >5% 且样本 ≥20 → unreliable 只记录不裁决）。滑窗/lifetime/flaky 全部按信任**分桶隔离**：TRUSTED 的窗口只被 TRUSTED 报告影响，低信任凭据投毒不了真判定
+- **两轴门控**：信任轴（UNVERIFIED 仅落盘不进裁决；TRUSTED 的 PASS 才衰减、FAIL 才享"跨线优先"注入 DEGRADED 级嫌疑并可立即熔断；NORMAL 只加等级分值）× 信号轴（PASS 只洗质量类、洗不穿负分地板）
 - **接入**：pytest 插件 `-p satori_gateway.pytest_plugin`（`@satori_test(level=)`）；非 pytest 生态 `satori-test-report results.xml`；凭据走环境变量（SATORI_URL/REPORTER/SECRET，见 SECURITY.md）
 
 ### 3.10 Tool Call 链级审计（slop.py）
@@ -143,7 +143,7 @@
 - **change_trace**：每个带工具调用的响应落一条 trace（step/tool/args_valid/args_bytes/flags/score）到 `state/tool_traces.jsonl`——干净的链也留痕供回放
 - **结构化评分**：断链 JSON（+30）/ 幻觉工具——调了请求里没声明的（+20）/ 同响应复读（+15）/ 参数膨胀 >8KB（+10）。**诚实的边界：不是语义判定**——"参数选错但 JSON 合法"要交给测试套件
 - **三阶段**：怀疑（单步 score>0，广播事件）→ 实锤（同 session 累计 2 步 → 注入 DEGRADED 级**质量类**嫌疑 40 分，权重高于 Logprob，可被 L0/L1 PASS 部分衰减但不穿地板）→ 回溯（origin_trace + origin_step 高亮第一个"被污染的念头"）
-- **前置**：adapter v2 已双向翻译 tools（含流式 input_json_delta 重组）；session 由客户端 `X-Satori-Session` 头声明（缺省按请求粒度）
+- **前置**：adapter v2 已双向翻译 tools（含流式 input_json_delta 重组）；session 由客户端 `X-Satori-Session` 头声明（缺省按 `upstream/model` 归并，未实锤 session 跟踪上限 1000、最久不活动先淘汰）
 
 ## 4. 报警、衰减、三档与熔断运维
 

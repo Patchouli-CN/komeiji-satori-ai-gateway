@@ -47,19 +47,38 @@ def _build_engine(cfg: Config) -> RuleEngine:
     return RuleEngine(rules)
 
 
-def _record_refreshed(cfg: Config, model: str, pressure_level: str,
-                      source: str) -> None:
+def _record_refreshed(cfg: Config, upstream: str, model: str,
+                      pressure_level: str, source: str) -> None:
     """采集成功记一笔 refreshed 事件（v4 Phase 2：TTL 的学习原料——
-    与 feedback 退役事件一起喂给动态保质期引擎）。"""
+    与 feedback 退役事件一起喂给动态保质期引擎）。
+    事件按 (upstream, model) 归属：官方与中转同名模型的账不混。"""
     store = StateStore(cfg.state.directory)
-    events = store.read_baseline_events(model=model)
+    events = store.read_baseline_events(model=model, upstream=upstream)
     last_ts = max((e.get("ts", 0.0) for e in events), default=None)
     store.append_baseline_event({
-        "ts": time.time(), "model": model, "event": "refreshed",
+        "ts": time.time(), "upstream": upstream, "model": model,
+        "event": "refreshed",
         "pressure_level_at_collect": pressure_level, "source": source,
         "days_since_last_refresh": (
             (time.time() - last_ts) / 86400 if last_ts else None),
     })
+
+
+def _clear_retired_meta(cfg: Config, upstream: str, model: str) -> None:
+    """重采成功后清理归档里的退役标记——否则基线恢复了，
+    startup_report 还在拿旧退役时间误报 BASIC。"""
+    meta_path = cfg.state.archive_dir / f"{upstream}--{model}" / "meta.json"
+    if not meta_path.exists():
+        return
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    if meta.pop("retired_at", None) is not None:
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+        print(f"[baseline] {upstream}/{model} 已重采——退役标记清除，"
+              "判别等级按可信度重新计算")
 
 
 def _pressure_gate(vendor: str, force_pressure: bool,
@@ -108,7 +127,8 @@ async def _collect(config_path: str, upstream_name: str, model: str,
     out.write_text(json.dumps(dist, ensure_ascii=False, indent=2), encoding="utf-8")
     sidecar = write_sidecar(out, source=source, pressure_level=level,
                             notes=notes, prompt=prompt, vendor=upstream_name)
-    _record_refreshed(cfg, model, level, source)
+    _record_refreshed(cfg, upstream_name, model, level, source)
+    _clear_retired_meta(cfg, upstream_name, model)
     print(f"参考指纹已写入 {out}（{len(dist)} 个 token）")
     print(f"溯源 sidecar 已写入 {sidecar}（source={source}, pressure={level}）")
     if source != "official":
@@ -132,7 +152,8 @@ async def _answers(config_path: str, upstream_name: str, model: str,
     out.write_text(json.dumps(answers, ensure_ascii=False, indent=2), encoding="utf-8")
     sidecar = write_sidecar(out, source=source, pressure_level=level,
                             notes=notes, vendor=upstream_name)
-    _record_refreshed(cfg, model, level, source)
+    _record_refreshed(cfg, upstream_name, model, level, source)
+    _clear_retired_meta(cfg, upstream_name, model)
     print(f"参考作答已写入 {out}（{len(answers)} 题）")
     print(f"溯源 sidecar 已写入 {sidecar}（source={source}, pressure={level}）")
     if source != "official":

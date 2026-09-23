@@ -7,11 +7,15 @@
 
 | 轴 | 管什么 | 取值 |
 | :--- | :--- | :--- |
-| **信任轴** | 谁的 PASS/FAIL 有分量 | `TRUSTED`（PASS 可衰减、FAIL 可熔断）/ `NORMAL`（仅记录不计权）/ `UNVERIFIED`（仅记录） |
+| **信任轴** | 谁的 PASS/FAIL 有分量 | `TRUSTED`（全额：PASS 可衰减、FAIL 可熔断）/ `NORMAL`（FAIL 只加等级分值，PASS 不衰减）/ `UNVERIFIED`（仅落盘留痕，不进裁决） |
 | **角色轴** | 能动哪些操作 | `reporter`（提交上报与反馈建议）→ `operator`（确认退役、熔断复位、TTL 锁定、身份解冻）→ `admin`（凭据签发/吊销） |
 
 角色是**等级**不是平行标签：operator 天然是 reporter，admin 天然是一切。
 信任等级不赋予任何操作权限——`TRUSTED` 也一样不能碰 `breaker/reset`。
+
+裁决状态按信任**分桶隔离**：TRUSTED 的滑窗/flaky 判定只被 TRUSTED 报告
+影响，NORMAL 报告稀释不了真窗口；幂等键带 reporter_id——可预测的
+trace_id 不会被抢先上报封杀。
 
 ## 2. 凭据生命周期
 
@@ -24,7 +28,9 @@ admin_secret（env:SATORI_ADMIN_SECRET，或回环首次启动的引导 token）
 └────┬────┘
      ▼
 ┌─────────┐  使用：X-Satori-Reporter / Timestamp / Signature(/ Nonce)
- │ 验签    │  hmac：HMAC-SHA256(secret, "<ts>.<原始请求体>")，5 分钟窗
+ │ 验签    │  hmac：HMAC-SHA256(secret, "<ts>.<原始请求体>")，5 分钟窗；
+ │         │        可选 X-Satori-Nonce——带了则签 "<ts>.<nonce>.<body>"，
+ │         │        nonce 一次性（验签通过才消费，缓存满按最旧淘汰）
  │         │  ed25519：sign(canonical_json{reporter_id, ts, nonce, body_hash})，nonce 一次性
  └────┬────┘
       ▼
@@ -33,12 +39,27 @@ admin_secret（env:SATORI_ADMIN_SECRET，或回环首次启动的引导 token）
  └─────────┘
 ```
 
+引导 token（回环 + 未配置 admin_secret 时首次启动生成）只打印到 stderr，
+**不落日志文件**——明文凭据不进持久化通道；重启即失效。
+
 ### 两种模式怎么选
 
 - **单人本地（默认 `hmac`）**：共享 secret。服务端 SQLite 必须存 secret 原文
-  （HMAC 验证需要 key）——管好 `state/credentials.db` 的文件权限，别进 git。
+  （HMAC 验证需要 key）——凭据库文件创建时自动 `chmod 0600`（Windows 上
+  设置失败只告警），管好 `state/credentials.db`，别进 git。
 - **多团队跨网络（`ed25519`）**：非对称。服务端只存公钥，私钥从不离开 reporter；
   吊销即从注册表移除，不牵动服务端的对称材料。配 `require_tls = true` 使用。
+
+### HMAC 的重放防护
+
+HMAC 模式的时间窗只能拦窗口外的重放；窗口内的逐字节重放靠两层：
+
+1. **nonce（推荐新客户端）**：带 `X-Satori-Nonce` 头的请求按
+   `"<ts>.<nonce>.<body>"` 签名，nonce 一次性——重放直接 401。
+   不带 nonce 的旧客户端请求继续接受（兼容存量）。
+2. **confirm 去重（服务端兜底）**：`baseline/feedback` 的 confirm 分支按
+   `(reporter, 请求体 sha256)` 在时间窗内去重——重放合法 confirm 刷不了
+   计数、退役不了基线（响应 `action: confirm-deduped`）。
 
 同一实例可以两种模式共存：不同 reporter 用不同 method，`verify` 按凭据分派。
 
@@ -72,13 +93,15 @@ Slop 链级审计按 **session** 累计怀疑→实锤。让工具链归属于�
 ```
 业务客户端 ── X-Satori-Session: <会话 ID> ──▶ Satori ──▶ 上游
                                                 │
-                              session 无声明时按请求粒度（trace_id）算
+                          session 无声明时按 上游×模型 归并（兜底键）
 ```
 
 - **trace_id**：网关为每个转发的请求生成（`uuid4().hex[:16]`），进入
   `state/tool_traces.jsonl`。
 - **session_id**：客户端请求头 `X-Satori-Session` 声明；同一会话的多轮
-  工具调用共享一个 session，Slop 累计跨请求生效。
+  工具调用共享一个 session，Slop 累计跨请求生效。无声明时按
+  `upstream/model` 归并（早期版本按请求粒度 trace_id 算——每请求一个新
+  uuid，实锤永远凑不满两步，那是 bug 不是设计）。
 - **OpenTelemetry 兼容**：若你已有 trace 体系，把 W3C `traceparent` 的
   trace-id 作为 `X-Satori-Session` 传入即可——Satori 不解析 OTel 语义，
   只借用其唯一性。测试执行链的打通：业务请求 → Tool Call → 测试上报共用
@@ -100,7 +123,9 @@ Slop 链级审计按 **session** 累计怀疑→实锤。让工具链归属于�
 | `SATORI_LEVEL` | pytest 插件默认测试级别（默认 L1） |
 
 **容错语义**：Satori 不可达或报 5xx → 入本地队列，**测试不中断、CI 不红**；
-下次运行自动补发，交付即出队。
+缺凭据（SATORI_SECRET / 私钥未配）同样入队并警告，不炸 pytest 收尾；
+**4xx（校验失败/凭据吊销）是客户端问题——直接丢弃并警告，永不入队**
+（毒丸重试也不会成功）。下次运行自动补发，交付即出队。
 
 ```bash
 # pytest 生态

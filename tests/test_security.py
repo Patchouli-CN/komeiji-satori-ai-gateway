@@ -8,6 +8,9 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import stat
 import time
 
 import pytest
@@ -31,10 +34,13 @@ from satori_gateway.config import (
 from satori_gateway.security import (
     _ANONYMOUS,
     H_ADMIN,
+    H_NONCE,
     H_REPORTER,
     H_SIGNATURE,
     H_TIMESTAMP,
     ControlAuth,
+    CredentialStore,
+    NonceCache,
     Role,
     TrustLevel,
     sign_request,
@@ -225,6 +231,105 @@ class TestHMACVerification:
         assert r.json()["reset"] is False
 
 
+# ---- HMAC nonce（可选，与 Ed25519 共用一次性缓存机制） ----
+
+class TestHMACNonce:
+    def test_nonce_signed_request_accepted_then_replay_rejected(self, env):
+        _, client = env
+        secret = issue(client, "op", roles=["operator"])
+        raw = json.dumps(RESET_BODY).encode()
+        headers = {H_REPORTER: "op", **sign_request(secret, raw, nonce="n-1")}
+        r = client.post("/satori/breaker/reset", content=raw, headers=headers)
+        assert r.status_code == 200
+        # 同一 nonce 逐字节重放 → 401（nonce 一次性）
+        r = client.post("/satori/breaker/reset", content=raw, headers=headers)
+        assert r.status_code == 401
+
+    def test_nonce_header_with_legacy_signature_rejected(self, env):
+        """带了 nonce 头却按旧格式签名 → 验不过（不许降级回窗口重放）。"""
+        _, client = env
+        secret = issue(client, "op", roles=["operator"])
+        raw = json.dumps(RESET_BODY).encode()
+        headers = {H_REPORTER: "op", H_NONCE: "n-x",
+                   **sign_request(secret, raw)}  # 旧格式签名
+        r = client.post("/satori/breaker/reset", content=raw, headers=headers)
+        assert r.status_code == 401
+
+    def test_failed_signature_does_not_consume_nonce(self, env):
+        """验签失败不占坑：废签名灌缓存 DoS 不了 nonce 防护。"""
+        _, client = env
+        secret = issue(client, "op", roles=["operator"])
+        raw = json.dumps(RESET_BODY).encode()
+        bad = {H_REPORTER: "op", H_TIMESTAMP: str(int(time.time())),
+               H_NONCE: "n-keep", H_SIGNATURE: "0" * 64}
+        assert client.post("/satori/breaker/reset", content=raw,
+                           headers=bad).status_code == 401
+        good = {H_REPORTER: "op", **sign_request(secret, raw, nonce="n-keep")}
+        assert client.post("/satori/breaker/reset", content=raw,
+                           headers=good).status_code == 200
+
+    def test_cache_full_evicts_oldest_not_clear(self):
+        """缓存满按最旧淘汰——整体清空等于给窗口期旧 nonce 重新放行。"""
+        cache = NonceCache(max_size=3)
+        for n in ("a", "b", "c"):
+            cache.consume(n)
+        cache.consume("d")  # 超限 → 淘汰最旧的 a
+        assert cache.is_fresh("a") is True       # a 被淘汰，可再用
+        assert cache.is_fresh("b") is False      # b/c/d 仍在册——不是全清
+        assert cache.is_fresh("c") is False
+        assert cache.is_fresh("d") is False
+        assert cache.is_fresh("e") is True
+
+
+# ---- 凭据库文件权限 ----
+
+class TestCredentialStorePermissions:
+    def test_db_chmod_0600(self, tmp_path):
+        db = tmp_path / "c.db"
+        store = CredentialStore(db)
+        store.close()
+        if os.name != "nt":  # Windows 的 chmod 语义有限，只验 POSIX
+            assert stat.S_IMODE(db.stat().st_mode) == 0o600
+
+    def test_chmod_failure_warns_but_store_works(self, tmp_path, monkeypatch,
+                                                 caplog):
+        import satori_gateway.security as sec
+
+        def boom(*args, **kwargs):
+            raise OSError("read-only fs")
+
+        monkeypatch.setattr(sec.os, "chmod", boom)
+        with caplog.at_level(logging.WARNING, logger="satori"):
+            store = CredentialStore(tmp_path / "c.db")
+        assert any("0600" in r.getMessage() for r in caplog.records)
+        cred, secret = store.issue("x", TrustLevel.NORMAL, (Role.REPORTER,))
+        assert store.get_active("x").reporter_id == "x"
+        store.close()
+
+
+# ---- 引导 token 与配置校验 ----
+
+class TestBootstrapAndConfig:
+    def test_bootstrap_token_to_stderr_not_log(self, tmp_path, capsys, caplog):
+        """引导 token 是明文凭据：只写控制台，不落持久化日志文件。"""
+        auth = ControlAuth(tmp_path / "c.db", admin_secret="")
+        with caplog.at_level(logging.WARNING, logger="satori"):
+            token = auth.startup_check()
+        assert token
+        assert token in capsys.readouterr().err  # 控制台可见
+        assert token not in caplog.text          # 日志里绝不留
+        auth.store.close()
+
+    def test_security_mode_validated(self, tmp_path):
+        from satori_gateway.config import SecurityConfig, load
+        with pytest.raises(ValueError, match="security.mode"):
+            SecurityConfig(mode="md5")
+        bad = tmp_path / "bad.toml"
+        bad.write_text('[security]\nmode = "md5"\n', encoding="utf-8")
+        with pytest.raises(ValueError, match="security.mode"):
+            load(bad)
+
+
 # ---- 端点授权矩阵（6A） ----
 
 class TestRoleMatrix:
@@ -260,6 +365,18 @@ class TestRoleMatrix:
         assert r.json() == {"reset": True, "upstream": "openai", "model": "gpt-4o"}
         assert key not in satori.breakers
         assert key not in satori.suspicion
+
+    def test_reset_audit_log_records_operator(self, env, caplog):
+        """复位是高危操作——审计日志必须留下操作者（对齐 ttl/identity 格式）。"""
+        satori, client = env
+        secret = issue(client, "op", roles=["operator"])
+        satori.breakers[("openai", "gpt-4o")] = time.time()
+        with caplog.at_level(logging.INFO, logger="satori"):
+            r = signed_post(client, "/satori/breaker/reset", secret, "op",
+                            RESET_BODY)
+        assert r.status_code == 200
+        assert any("复位" in rec.getMessage() and "op" in rec.getMessage()
+                   for rec in caplog.records)
 
     def test_revoked_credential_rejected_401(self, env):
         _, client = env

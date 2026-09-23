@@ -4,13 +4,15 @@
 设计要点（v4 容错验证）：
 - 凭据从环境变量读，代码零配置——Satori 不可达时测试不中断
 - HMAC / Ed25519 双模式签名；**重试时重新签名**（时间戳/nonce 会变）
-- 发送失败进本地队列文件，下次运行/后台重试时补发
+- 5xx / 网络异常 / 缺签名材料 → 进本地队列文件，下次运行/后台重试时补发；
+  4xx（校验失败/凭据吊销）是客户端问题——丢弃并警告，毒丸不入队
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,9 +113,21 @@ class SatoriReporter:
         body = json.dumps(report, ensure_ascii=False).encode()
         try:
             headers = {"X-Satori-Reporter": self.reporter, **self.sign(body)}
+        except RuntimeError as exc:
+            # 缺 secret / 私钥：签名都做不了——入队兜底，绝不穿透调用方收尾
+            self._enqueue(report)
+            return ReportResult(0, "queued", str(exc))
+        try:
             r = httpx.post(self.url, content=body, headers=headers,
                            timeout=self.timeout)
-            if r.status_code >= 400:
+            if 400 <= r.status_code < 500:
+                # 4xx 是客户端问题（400 校验失败 / 401 凭据吊销）——
+                # 重试永远不会成功，毒丸不入队，直接丢弃并警告
+                detail = r.text[:200]
+                print(f"[satori] 上报被服务端拒绝（{r.status_code}，"
+                      f"不入队补发）：{detail}", file=sys.stderr)
+                return ReportResult(r.status_code, "rejected", detail)
+            if r.status_code >= 500:
                 detail = r.text[:200]
                 self._enqueue(report)
                 return ReportResult(r.status_code, "error", detail)
@@ -150,18 +164,25 @@ class SatoriReporter:
                     continue
         return out
 
-    def flush_queue(self) -> list[ReportResult]:
-        """补发队列。成功的项目从队列文件移除（重写剩余）。"""
+    def flush_queue(self, skip: list[dict] | None = None) -> list[ReportResult]:
+        """补发队列。成功的项目从队列文件移除（重写剩余）。
+
+        skip：本轮刚处理过（且已重新入队）的条目——补发只针对历史旧账，
+        别把刚失败的项目同轮再发一遍（双发）。
+        """
         pending = self.pending()
         if not pending:
             return []
+        skip = skip or []
+        skipped = [r for r in pending if r in skip]
+        todo = [r for r in pending if r not in skip]
         results, failed = [], []
-        for report in pending:
+        for report in todo:
             result = self.send(report)
             results.append(result)
             if not result.ok:
                 failed.append(report)
-        self._rewrite_queue(failed)
+        self._rewrite_queue(skipped + failed)
         return results
 
     def _rewrite_queue(self, remaining: list[dict]) -> None:

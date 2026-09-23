@@ -151,6 +151,10 @@ def main(argv: list[str] | None = None) -> int:
             result = reporter.send(report)
             if result.ok:
                 sent += 1
+            elif result.action == "rejected":
+                failed += 1  # 4xx 毒丸：丢弃不入队，重试也不会成功
+                print(f"[satori] 上报被拒（{result.status_code}，不入队）："
+                      f"{case['name']} → {result.detail}", file=sys.stderr)
             else:
                 failed += 1
                 print(f"[satori] 上报失败（已入队）：{case['name']} → "

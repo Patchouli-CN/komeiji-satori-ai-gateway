@@ -42,6 +42,15 @@ def create_app(secret: str = "", reject: bool = False,
         if secret:
             ts = request.headers.get("X-Satori-Timestamp", "")
             sig = request.headers.get("X-Satori-Signature", "")
+            # 与真网关一致：时间戳窗口（5 分钟）+ HMAC 验签
+            try:
+                ts_int = int(ts)
+            except ValueError:
+                return JSONResponse({"error": "bad timestamp"},
+                                    status_code=401)
+            if abs(time.time() - ts_int) > 300:
+                return JSONResponse({"error": "stale timestamp"},
+                                    status_code=401)
             expected = hmac.new(secret.encode(), f"{ts}.".encode() + body,
                                 hashlib.sha256).hexdigest()
             if not hmac.compare_digest(expected, sig):
@@ -57,10 +66,10 @@ def create_app(secret: str = "", reject: bool = False,
             if store_path is not None:
                 with store_path.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        # 模拟裁决响应：通过/失败都按 Satori 的返回形状给
+        # 模拟裁决响应：按真网关的返回形状给（pass 衰减 / fail 记录）
         status = payload.get("status")
         return {"accepted": True,
-                "action": "recorded" if status == "pass" else "recorded",
+                "action": "pass-decay" if status == "pass" else "recorded",
                 "detail": "mock 不裁决，只记录"}
 
     @app.get("/satori/test/reports")

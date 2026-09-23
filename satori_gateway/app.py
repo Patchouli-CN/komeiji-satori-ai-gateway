@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -23,7 +24,7 @@ from .levels import AlertLevel, level_of
 from .pipelines import TransferPipeline, build_pipeline
 from .record import append_record, make_entry
 from .rules import RuleEngine
-from .security import ControlAuth, Role, TrustLevel
+from .security import ControlAuth, Role, TrustLevel, roles_satisfy
 from .slop import CONFIRMED_SCORE, SlopLedger, score_tool_calls
 from .state import StateStore
 from .testing import TestAdjudicator, TestReport
@@ -179,6 +180,9 @@ class KomeijiSatori:
         self.breakers: dict[tuple[str, str], float] = {}
         # (upstream, model) -> 熔断期间拦截次数
         self._breaker_blocks: dict[tuple[str, str], int] = {}
+        # (reporter_id, 请求体 sha256) -> 首次处理时刻：HMAC 模式无 nonce 时
+        # 防 confirm 重放（窗口内同一 reporter 同一请求体只计一次确认）
+        self._confirm_seen: dict[tuple[str, str], float] = {}
         # /satori/live 的 WebSocket 订阅者
         self._subscribers: set[WebSocket] = set()
         # 控制面封印授权（Gate 0 / Phase 6）：feedback/reset/admin 的信任链
@@ -232,7 +236,10 @@ class KomeijiSatori:
                 for checker in self.checkers:
                     if (bl.level is BaselineLevel.BASIC
                             and checker.name in IDENTITY_CHECKER_WEIGHTS):
-                        continue  # BASIC：仅黑盒通道在岗
+                        # BASIC：仅黑盒通道在岗。身份通道停探时把旧结果一并清掉——
+                        # 不然面板还显示着降级前的陈旧"在岗"状态
+                        self.results.pop((checker.name, upstream.name, model), None)
+                        continue
                     try:
                         r = await checker.check(client, upstream, model)
                     except Exception as exc:
@@ -281,7 +288,7 @@ class KomeijiSatori:
         预测只预警——退役必经 feedback 的地面真值（预测不误杀）。"""
         self.baselines.recompute_all()
         for key, st in self.baselines.states.items():
-            verdict = self.ttl.verdict(st.model, st.collected_at)
+            verdict = self.ttl.verdict(st.upstream, st.model, st.collected_at)
             if verdict is None:
                 continue
             warning = self.ttl.due_warnings(verdict)
@@ -414,7 +421,7 @@ class KomeijiSatori:
         canonical = adapter.to_canonical(client_payload)
         model = canonical.get("model", "")
         # Tool Call 链级审计的线索（v4 Phase 4）：每请求一个 trace_id；
-        # session 由客户端 X-Satori-Session 头声明（没有就按请求粒度算）
+        # session 由客户端 X-Satori-Session 头声明（没有则按 上游×模型 归并）
         trace_id = uuid.uuid4().hex[:16]
         session_id = request.headers.get("x-satori-session", "")
 
@@ -671,7 +678,9 @@ class KomeijiSatori:
         trace = score_tool_calls(tool_calls, declared)
         if trace is None:
             return
-        session = session_id or trace.trace_id
+        # 无 session 头时兜底按 上游×模型 归并——trace_id 每请求一个新 uuid，
+        # 拿它当 session 键永远凑不满 CONFIRM_STEPS，实锤路径就成了死路
+        session = session_id or f"{upstream}/{model}"
         self.state.append_tool_trace({
             **trace.to_dict(), "upstream": upstream, "model": model,
             "session": session,
@@ -855,6 +864,7 @@ class KomeijiSatori:
 
     async def breaker_reset(self, request: Request):
         """人工复位熔断器：清除熔断状态和可疑度。"""
+        identity = request.state.identity
         try:
             payload = await request.json()
         except Exception:
@@ -867,10 +877,12 @@ class KomeijiSatori:
         self.identity.pop(key, None)
         self._identity_ts.pop(key, None)
         if was_open:
-            log.info("[breaker] %s/%s 已人工复位", key[0], key[1])
+            log.info("[breaker] %s/%s 熔断器由 %s 人工复位",
+                     key[0], key[1], identity.reporter_id)
             await self.publish({
                 "type": "breaker", "state": "closed",
                 "upstream": key[0], "model": key[1],
+                "reporter": identity.reporter_id,
             })
         return {"reset": was_open, "upstream": key[0], "model": key[1]}
 
@@ -906,7 +918,21 @@ class KomeijiSatori:
                 {"error": "invalid",
                  "detail": "ttl_days / expires_at 必须是数字（unix 时间戳）"},
                 status_code=400)
-        record = self.ttl.override(model, ttl_days=ttl_days,
+        if ttl_days is not None and (not math.isfinite(ttl_days) or ttl_days <= 0):
+            return JSONResponse(
+                {"error": "invalid",
+                 "detail": "ttl_days 必须是正的有限数值"}, status_code=400)
+        if expires_at is not None and not math.isfinite(expires_at):
+            return JSONResponse(
+                {"error": "invalid",
+                 "detail": "expires_at 必须是有限的 unix 时间戳"}, status_code=400)
+        if ttl_days is None:
+            # expires_at 是"锁到何时"，不是锁本身——光给期限不给天数无从锁起
+            return JSONResponse(
+                {"error": "invalid",
+                 "detail": "expires_at 必须与 ttl_days 搭配使用"
+                           "（锁多久 + 锁到何时）"}, status_code=400)
+        record = self.ttl.override(upstream, model, ttl_days=ttl_days,
                                    expires_at=expires_at, reason=reason)
         st = self.baselines.recompute(upstream, model)
         log.info("[ttl] %s/%s 保质期由 %s 锁定（reason=%s）",
@@ -931,8 +957,9 @@ class KomeijiSatori:
         """误报反馈闭环：确认官方更新 → 退役旧基线，BASIC 模式优雅降级；
         网络抖动/误报 → 仅清零账本。全部留痕 feedback.jsonl，replay 可关联。"""
         identity = request.state.identity  # 路由级 dependency 挂上的身份
+        raw = await request.body()
         try:
-            payload = await request.json()
+            payload = json.loads(raw)
         except Exception:
             return JSONResponse({"error": "invalid JSON"}, status_code=400)
         upstream = str(payload.get("upstream", ""))
@@ -955,14 +982,34 @@ class KomeijiSatori:
         }
         key = (upstream, model)
         if confirm:
+            # 防重放（HMAC 模式无 nonce 时的兜底）：窗口内同一 reporter 的
+            # 同一请求体只计一次确认——重放合法 confirm 刷不了计数/退役
+            window = self.config.security.timestamp_window_seconds
+            now = time.time()
+            self._confirm_seen = {
+                k: t for k, t in self._confirm_seen.items() if now - t < window}
+            dedup_key = (identity.reporter_id, hashlib.sha256(raw).hexdigest())
+            if dedup_key in self._confirm_seen:
+                record["action"] = "confirm-deduped"
+                record["detail"] = ("窗口内相同 confirm 请求体重放——只计一次"
+                                    "（HMAC 模式防重放兜底；带 X-Satori-Nonce "
+                                    "的请求由 nonce 一次性机制拦在验签层）")
+                self.state.append_feedback(record)
+                await self.publish({"type": "feedback", "upstream": upstream,
+                                    "model": model, "reason": reason,
+                                    "action": record["action"],
+                                    "reporter": identity.reporter_id})
+                return record
+            self._confirm_seen[dedup_key] = now
             if reason == "official_update":
-                cold = self.baselines.is_cold_start(model)
+                cold = self.baselines.is_cold_start(upstream, model)
                 record["bootstrap"] = cold  # 冷启动样本标记（v4 Phase 0.5）
                 threshold = 1 if cold else 3
                 last_retired = self.baselines.get(upstream, model).retired_at
                 count = self.baselines.official_update_confirms(
                     upstream, model, last_retired) + 1  # 含本次
-                if Role.OPERATOR in identity.roles or count >= threshold:
+                if roles_satisfy(identity.roles, Role.OPERATOR) \
+                        or count >= threshold:
                     last = self.results.get(("fingerprint", *key))
                     st = self.baselines.retire(
                         upstream, model, reason=reason,
@@ -993,8 +1040,9 @@ class KomeijiSatori:
     async def test_report(self, request: Request):
         """业务测试上报：质量锚点入口。
 
-        信任轴（Phase 6）门控在此叠加：TRUSTED 的 PASS 才衰减、FAIL 才可熔断；
-        UNVERIFIED 一切仅记录。信号轴（滑窗/flaky/负分地板/维度隔离）由
+        信任轴（Phase 6）门控先于裁决：UNVERIFIED 仅落盘不进裁决引擎；
+        TRUSTED / NORMAL 进各自分桶（裁决状态按信任隔离），且 TRUSTED 的
+        PASS 才衰减、FAIL 才可熔断。信号轴（滑窗/flaky/负分地板/维度隔离）由
         TestAdjudicator 与账本拆分负责——两轴都过才算数。
         """
         if not self.config.testing.enabled:
@@ -1019,21 +1067,27 @@ class KomeijiSatori:
                  "detail": f"配置里找不到 {report.upstream}/{report.model_claimed}"},
                 status_code=400)
 
-        decision = self.tests.decide(report)
+        # ---- 信任轴门控（先于裁决，不是裁决后清零分数） ----
+        # UNVERIFIED：仅落盘留痕，完全不进裁决引擎——滑窗/幂等/flaky 都碰不到
+        if identity.trust_level is TrustLevel.UNVERIFIED:
+            self.tests.record_only(report, reporter_id=identity.reporter_id)
+            return {"accepted": True, "action": "recorded",
+                    "detail": "UNVERIFIED 凭据仅落盘记录，不进裁决（信任轴）",
+                    "score_delta": 0.0, "decay_amount": 0.0,
+                    "trigger_breaker": False}
+        # TRUSTED / NORMAL 进各自分桶的裁决：NORMAL 桶的窗口/lifetime/flaky
+        # 与 TRUSTED 桶结构隔离，低信任报告稀释不了真窗口
+        decision = self.tests.decide(
+            report, trust=identity.trust_level.value,
+            reporter_id=identity.reporter_id)
         if not decision.accepted:
             return {"accepted": False, "action": decision.action,
                     "detail": decision.detail}
-        # ---- 信任轴门控 ----
         if (decision.decay_amount > 0
                 and identity.trust_level is not TrustLevel.TRUSTED):
             decision.action = "recorded"
             decision.decay_amount = 0.0
             decision.detail = "非 TRUSTED 凭据的 PASS 不衰减嫌疑分（信任轴）"
-        if (decision.score_delta > 0
-                and identity.trust_level is TrustLevel.UNVERIFIED):
-            decision.action = "recorded"
-            decision.score_delta = 0.0
-            decision.detail = "UNVERIFIED 凭据的 FAIL 仅记录（信任轴）"
         if identity.trust_level is not TrustLevel.TRUSTED:
             decision.trigger_breaker = False
         # ---- 落账本/熔断 ----
@@ -1043,7 +1097,7 @@ class KomeijiSatori:
             # "DEGRADED 级别嫌疑分"（v4 5A）：**仅 TRUSTED 凭据**享受
             # "分值保底、跨线优先"——触发即够跨过熔断线，跳过 WATCH 缓冲期。
             # NORMAL 只加等级分值（15/10/8），能否熔断续由通用账本阈值决定；
-            # UNVERIFIED 在上面已被降级为仅记录
+            # UNVERIFIED 在上面已被拦下，根本不进裁决
             topped = identity.trust_level is TrustLevel.TRUSTED
             if topped:
                 injected = max(decision.score_delta,
@@ -1183,10 +1237,10 @@ class KomeijiSatori:
             },
             "baselines": [
                 {**st.to_dict(),
-                 "cold_start": self.baselines.is_cold_start(st.model),
+                 "cold_start": self.baselines.is_cold_start(st.upstream, st.model),
                  "ttl": (v.to_dict() if (v := self.ttl.verdict(
-                     st.model, st.collected_at)) is not None else None),
-                 "ttl_override": self.ttl.override_of(st.model)}
+                     st.upstream, st.model, st.collected_at)) is not None else None),
+                 "ttl_override": self.ttl.override_of(st.upstream, st.model)}
                 for st in self.baselines.states.values()
             ],
             "tests": self.tests.summary(),

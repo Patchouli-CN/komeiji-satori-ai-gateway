@@ -134,6 +134,22 @@ class TestTierActions:
         assert satori.results[("canary", "openai", "gpt-4o")].ok is True
         assert ("fingerprint", "openai", "gpt-4o") not in satori.results
 
+    def test_basic_transition_removes_stale_results(self, env):
+        """降级 BASIC 后身份通道的旧结果必须移除——不许残留在面板上装"在岗"。"""
+        satori, _ = env
+        write_refs(satori)  # STRICT：声纹在岗
+        satori.baselines.recompute(*KEY)
+        fake = CountingFingerprint()
+        satori.checkers = [fake]
+        asyncio.run(satori.run_all_checks(None))
+        assert ("fingerprint", "openai", "gpt-4o") in satori.results
+        # 退役 → BASIC：第二轮声纹停探，旧结果一并清掉
+        satori.baselines.retire("openai", "gpt-4o", reason="official_update",
+                                reporter="op")
+        asyncio.run(satori.run_all_checks(None))
+        assert fake.calls == 1  # 第二轮没再探
+        assert ("fingerprint", "openai", "gpt-4o") not in satori.results
+
     def test_weights_single_source_of_truth(self):
         """app 的别名与 baseline 的常量同源——防止两边岁久走偏。"""
         from satori_gateway.app import _IDENTITY_CHECKERS

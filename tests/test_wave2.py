@@ -255,6 +255,10 @@ class TestAdjudicatorUnit:
             ({"trace_id": "t", "test_suite": "s", "test_name": "n",
               "upstream": "u", "model_claimed": "m", "level": "L0",
               "status": "pass", "attempt": 0}, "attempt"),
+            # ts 非法值与其他字段一样走中文 400 文案，不是 500
+            ({"trace_id": "t", "test_suite": "s", "test_name": "n",
+              "upstream": "u", "model_claimed": "m", "level": "L0",
+              "status": "pass", "ts": "abc"}, "ts"),
         ]
         for payload, fragment in bad_cases:
             report, err = TestReport.from_payload(payload)
@@ -406,6 +410,72 @@ class TestReportEndpoint:
         assert tests[0]["model"] == "gpt-4o"
         assert tests[0]["total"] == 1 and tests[0]["failed"] == 1
         assert tests[0]["unreliable"] is False
+
+
+class TestTrustBucketIsolation:
+    """S2 回归：裁决状态按信任分桶隔离，低信任凭据污染不了 TRUSTED 的账。"""
+
+    def test_unverified_does_not_preempt_dedup(self, env):
+        """攻击面①：默认 trace_id 可预测（suite::name::attempt），
+        UNVERIFIED 抢先上报不得封杀真 TRUSTED 报告（幂等键带 reporter，
+        且 UNVERIFIED 根本不进裁决）。"""
+        satori, client = env
+        mallory = issue(client, "mallory", roles=["reporter"], trust="unverified")
+        bot = issue(client, "bot", roles=["reporter"], trust="trusted")
+        body = {**REPORT_BODY, "trace_id": "core::test_add::1"}  # 插件默认形状
+        r = post_report(client, mallory, "mallory", body)
+        assert r.json()["action"] == "recorded"
+        assert satori._decayed(KEY) == 0.0  # 仅落盘
+        r = post_report(client, bot, "bot", body)
+        assert r.json()["accepted"] is True
+        assert r.json()["action"] != "deduped"  # 没被抢占封杀
+        # 同 reporter 真重发才 dedup
+        r = post_report(client, bot, "bot", body)
+        assert r.json()["accepted"] is False
+        assert r.json()["action"] == "deduped"
+
+    def test_flaky_poisoning_isolated_per_bucket(self):
+        """攻击面②：低信任桶 18 PASS + 2 FAIL 把测试标 unreliable，
+        TRUSTED 桶的判定不受毒化。"""
+        adj = TestAdjudicator()
+        d = None
+        for i in range(20):
+            d = adj.decide(make_report(
+                trace_id=f"n{i}",
+                status="fail" if i in (3, 11) else "pass"),
+                trust="normal", reporter_id="mallory")
+        assert d.action == "unreliable"  # normal 桶确实被投毒了
+        # TRUSTED 桶的同一测试照常裁决：3 连败触发
+        actions = [
+            adj.decide(make_report(trace_id=f"t{i}"),
+                       trust="trusted", reporter_id="bot").action
+            for i in range(3)
+        ]
+        assert actions == ["recorded", "recorded", "fail-trigger"]
+
+    def test_window_dilution_isolated_per_bucket(self, env):
+        """攻击面③：NORMAL 的 PASS 填窗稀释不了 TRUSTED 窗口的失败密度。"""
+        _, client = env
+        bot = issue(client, "bot", roles=["reporter"], trust="trusted")
+        mallory = issue(client, "mallory", roles=["reporter"], trust="normal")
+        post_report(client, bot, "bot", {**REPORT_BODY, "trace_id": "f1"})
+        post_report(client, bot, "bot", {**REPORT_BODY, "trace_id": "f2"})
+        # 低信任凭据猛刷 PASS（若共窗，9 格滑窗会被洗掉 5 格失败密度）
+        for i in range(5):
+            post_report(client, mallory, "mallory",
+                        {**REPORT_BODY, "trace_id": f"p{i}", "status": "pass"})
+        r = post_report(client, bot, "bot", {**REPORT_BODY, "trace_id": "f3"})
+        assert r.json()["action"] == "fail-trigger"  # TRUSTED 窗仍是 [F,F,F]
+        assert r.json()["trigger_breaker"] is True
+
+    def test_unverified_replay_never_enters_judgement(self, tmp_path):
+        """UNVERIFIED 落盘的记录，重启重建时也不进裁决状态。"""
+        from satori_gateway.state import StateStore
+        state = StateStore(tmp_path / "state")
+        adj = TestAdjudicator(state)
+        adj.record_only(make_report(trace_id="u1"), reporter_id="mallory")
+        adj2 = TestAdjudicator(state)  # 模拟重启重建
+        assert adj2.summary() == []  # 裁决状态里没有它的影子
 
 
 class TestIdentityCleared:

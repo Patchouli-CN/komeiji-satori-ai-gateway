@@ -119,6 +119,26 @@ class TestSlopLedger:
         ledger.observe("s1", self._trace("a"))
         assert ledger.observe("s2", self._trace("b")) is None
 
+    def test_sessions_bounded_oldest_evicted(self):
+        """未实锤 session 槽位有上限：超限按最久不活动淘汰，不无界增长。"""
+        ledger = SlopLedger(confirm_steps=2, max_sessions=3)
+        for i in range(3):
+            ledger.observe(f"s{i}", self._trace(f"t{i}"))
+        ledger.observe("s3", self._trace("t3"))  # 超限 → 淘汰最旧的 s0
+        assert ledger.pending("s0") == 0
+        assert ledger.pending("s1") == 1
+        assert ledger.pending("s3") == 1
+
+    def test_active_session_survives_eviction(self):
+        """活跃的 session 排到队尾：淘汰先动久未活动的。"""
+        ledger = SlopLedger(confirm_steps=3, max_sessions=2)
+        ledger.observe("s1", self._trace("a"))
+        ledger.observe("s2", self._trace("b"))
+        ledger.observe("s1", self._trace("c"))  # s1 活跃 → 移尾
+        ledger.observe("s3", self._trace("d"))  # 淘汰的是 s2 不是 s1
+        assert ledger.pending("s2") == 0
+        assert ledger.pending("s1") == 2
+
     def test_clean_trace_never_confirms(self):
         ledger = SlopLedger()
         clean = score_tool_calls(
@@ -474,6 +494,20 @@ class TestObserveToolsWiring:
                 "openai", "gpt-4o", self._fwd(), self._broken_calls(),
                 f"session-{i}"))  # 每个会话只有一步可疑
         assert satori._decayed(KEY) == 0.0  # 永不实锤
+
+    def test_no_session_header_falls_back_to_upstream_model(self, env):
+        """S3 回归：客户端不发 X-Satori-Session 时按 上游×模型 归并——
+        两步可疑即实锤（旧代码拿每请求新 uuid 的 trace_id 当 session 键，
+        实锤路径永远凑不满 CONFIRM_STEPS）。"""
+        satori, _ = env
+        asyncio.run(satori._observe_tools(
+            "openai", "gpt-4o", self._fwd(), self._broken_calls(), ""))
+        assert satori._decayed(KEY) == 0.0  # 一步只是怀疑
+        asyncio.run(satori._observe_tools(
+            "openai", "gpt-4o", self._fwd(), self._broken_calls(), ""))
+        assert satori._decayed_quality(KEY) == pytest.approx(CONFIRMED_SCORE,
+                                                            abs=0.01)
+        assert satori.slop.pending("openai/gpt-4o") == 0  # 实锤后重新武装
 
     def test_no_declared_tools_still_scores_broken_args(self, env):
         satori, _ = env

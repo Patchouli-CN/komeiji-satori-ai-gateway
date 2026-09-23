@@ -23,8 +23,10 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -161,6 +163,12 @@ class CredentialStore:
         with self._lock:
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
+        # HMAC 模式存的是 secret 原文——文件权限必须兑现注释里的承诺
+        try:
+            os.chmod(db, 0o600)
+        except OSError as exc:
+            log.warning("[security] 凭据库 %s 设置 0600 权限失败（%r）——"
+                        "请手动管好这个文件的权限", db, exc)
 
     def close(self) -> None:
         with self._lock:
@@ -255,38 +263,86 @@ class CredentialStore:
 
 # ---- 6B 验证器 ----
 
+class NonceCache:
+    """一次性 nonce 缓存（HMAC / Ed25519 共用机制）。
+
+    纪律：只在验签**通过后**消费——验签前就占坑，攻击者用废签名灌满
+    缓存就能把防护 DoS 掉。满了按最旧淘汰，而不是整体清空（清空等于
+    给窗口期内的旧 nonce 重新放行）。
+    """
+
+    def __init__(self, max_size: int = 10_000) -> None:
+        self.max_size = max_size
+        self._nonces: dict[str, float] = {}  # 插入序 ≈ 时间序
+        self._lock = threading.Lock()
+
+    def is_fresh(self, nonce: str) -> bool:
+        """只查不消费——验签通过前的资格检查。"""
+        with self._lock:
+            return nonce not in self._nonces
+
+    def consume(self, nonce: str) -> None:
+        """验签通过后登记；缓存满时淘汰最旧条目。"""
+        with self._lock:
+            while len(self._nonces) >= self.max_size:
+                self._nonces.pop(next(iter(self._nonces)))
+            self._nonces[nonce] = time.time()
+
+
 class HMACVerifier:
     """HMAC-SHA256(secret, f"{timestamp}.{body}") + 时间窗防重放。
 
     body 取原始请求字节——反序列化后再序列化会因 JSON canonical 差异埋雷。
+
+    可选 nonce：客户端带 X-Satori-Nonce 时，签名覆盖
+    f"{ts}.{nonce}.{body}" 且 nonce 一次性（验签通过才消费）——
+    窗口内的逐字节重放被 nonce 拦死。不带 nonce 的旧客户端照样接受
+    （兼容存量），高风险端点另有 (reporter, 请求体hash) 去重兜底。
     """
 
-    def __init__(self, window_seconds: int = 300) -> None:
+    def __init__(self, window_seconds: int = 300,
+                 nonce_cache: NonceCache | None = None) -> None:
         self.window_seconds = window_seconds
+        self.nonces = nonce_cache or NonceCache()
 
-    def verify(self, secret: str, ts: str, signature: str, body: bytes) -> bool:
+    def verify(self, secret: str, ts: str, signature: str, body: bytes,
+               nonce: str = "") -> bool:
         try:
             ts_int = int(ts)
         except ValueError:
             return False
         if abs(time.time() - ts_int) > self.window_seconds:
             return False
-        expected = hmac.new(
-            secret.encode(), f"{ts}.".encode() + body, hashlib.sha256
-        ).hexdigest()
-        return hmac.compare_digest(expected, signature)
+        if nonce and not self.nonces.is_fresh(nonce):
+            return False
+        signed = f"{ts}.{nonce}.".encode() + body if nonce \
+            else f"{ts}.".encode() + body
+        expected = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, signature):
+            return False
+        if nonce:
+            self.nonces.consume(nonce)  # 验签通过才消费
+        return True
 
 
-def sign_request(secret: str, body: bytes, ts: int | None = None) -> dict[str, str]:
-    """生成控制面请求头（供 CLI / pytest-satori 插件 / 测试复用）。"""
+def sign_request(secret: str, body: bytes, ts: int | None = None,
+                 nonce: str | None = None) -> dict[str, str]:
+    """生成控制面请求头（供 CLI / pytest-satori 插件 / 测试复用）。
+
+    带 nonce 时签名覆盖 f"{ts}.{nonce}.{body}" 并附 X-Satori-Nonce 头；
+    不传则保持存量格式（f"{ts}.{body}"），服务端两种都认。
+    """
     ts = ts if ts is not None else int(time.time())
-    signature = hmac.new(
-        secret.encode(), f"{ts}.".encode() + body, hashlib.sha256
-    ).hexdigest()
-    return {
+    signed = f"{ts}.{nonce}.".encode() + body if nonce \
+        else f"{ts}.".encode() + body
+    signature = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+    headers = {
         H_TIMESTAMP: str(ts),
         H_SIGNATURE: signature,
     }
+    if nonce:
+        headers[H_NONCE] = nonce
+    return headers
 
 
 # ---- 6G Ed25519 非对称模式 ----
@@ -302,10 +358,10 @@ class Ed25519Verifier:
 
     _NONCE_CACHE_MAX = 10_000
 
-    def __init__(self, window_seconds: int = 300) -> None:
+    def __init__(self, window_seconds: int = 300,
+                 nonce_cache: NonceCache | None = None) -> None:
         self.window_seconds = window_seconds
-        self._nonces: dict[str, float] = {}
-        self._lock = threading.Lock()
+        self._nonces = nonce_cache or NonceCache(self._NONCE_CACHE_MAX)
 
     @staticmethod
     def canonical(reporter_id: str, ts: str, nonce: str, body: bytes) -> bytes:
@@ -318,15 +374,6 @@ class Ed25519Verifier:
         return json.dumps(payload, sort_keys=True,
                           separators=(",", ":")).encode("utf-8")
 
-    def _nonce_fresh(self, nonce: str) -> bool:
-        with self._lock:
-            if nonce in self._nonces:
-                return False
-            if len(self._nonces) >= self._NONCE_CACHE_MAX:
-                self._nonces.clear()  # 简单粗暴的有界缓存：窗口外的重放无意义
-            self._nonces[nonce] = time.time()
-            return True
-
     def verify(self, public_key_pem: str, reporter_id: str, ts: str,
                nonce: str, signature: str, body: bytes) -> bool:
         if not (public_key_pem and reporter_id and ts and nonce and signature):
@@ -337,8 +384,8 @@ class Ed25519Verifier:
             return False
         if abs(time.time() - ts_int) > self.window_seconds:
             return False
-        if not self._nonce_fresh(nonce):
-            return False
+        if not self._nonces.is_fresh(nonce):
+            return False  # 重放：只查不消费，坑位留给验签通过的请求
         try:
             from cryptography.hazmat.primitives.asymmetric.ed25519 import (
                 Ed25519PublicKey,
@@ -351,9 +398,10 @@ class Ed25519Verifier:
                 return False
             key.verify(bytes.fromhex(signature),
                        self.canonical(reporter_id, ts, nonce, body))
-            return True
         except Exception:
             return False
+        self._nonces.consume(nonce)  # 验签通过才消费——废签名不占坑
+        return True
 
 
 def generate_keypair() -> tuple[str, str]:
@@ -412,8 +460,11 @@ class ControlAuth:
         self.enabled = enabled
         self.mode = mode
         self.host = host
-        self.verifier = HMACVerifier(window_seconds)
-        self.ed25519_verifier = Ed25519Verifier(window_seconds)
+        # HMAC / Ed25519 共用一套 nonce 缓存机制：跨模式重放同一 nonce 也拦
+        self._nonce_cache = NonceCache()
+        self.verifier = HMACVerifier(window_seconds, self._nonce_cache)
+        self.ed25519_verifier = Ed25519Verifier(window_seconds,
+                                                self._nonce_cache)
         self.store = CredentialStore(db)
         self._admin_secret = _resolve_secret(admin_secret)
         self._bootstrap_secret = ""  # 回环 + 未配置 admin_secret 时首次启动生成
@@ -473,13 +524,14 @@ class ControlAuth:
             return None
         if _is_loopback(self.host):
             self._bootstrap_secret = secrets.token_urlsafe(32)
-            log.warning(
-                "[security] 未配置 security.admin_secret，已生成一次性引导 token"
-                "（仅打印这一次，重启失效）：\n"
-                "    %s\n"
-                "用它 POST /satori/admin/credentials 签发第一个 operator 凭据。",
-                self._bootstrap_secret,
-            )
+            # 引导 token 是明文凭据——只写控制台，不落持久化日志文件
+            print("[security] 未配置 security.admin_secret，已生成一次性引导 token"
+                  "（仅打印这一次，重启失效，不落日志文件）：\n"
+                  f"    {self._bootstrap_secret}\n"
+                  "用它 POST /satori/admin/credentials 签发第一个 operator 凭据。",
+                  file=sys.stderr)
+            log.warning("[security] 未配置 security.admin_secret——"
+                        "一次性引导 token 已打印到 stderr（明文不落日志）")
             return self._bootstrap_secret
         raise RuntimeError(
             f"security.admin_secret 未配置且 host={self.host!r} 不是回环地址——"
@@ -508,7 +560,11 @@ class ControlAuth:
             ok = self.ed25519_verifier.verify(
                 cred.secret, reporter_id, ts, nonce, signature, body)
         else:
-            ok = self.verifier.verify(cred.secret, ts, signature, body)
+            # nonce 可选：带了就按 nonce 签名验（一次性防重放），
+            # 不带的存量客户端按旧格式验
+            nonce = request.headers.get(H_NONCE, "")
+            ok = self.verifier.verify(cred.secret, ts, signature, body,
+                                      nonce=nonce)
         if not ok:
             return None
         self.store.touch(reporter_id, request.client.host if request.client else None)

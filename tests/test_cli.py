@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 
 
 def _collect_params() -> set[str]:
@@ -83,13 +84,50 @@ def test_record_refreshed_appends_event(tmp_path):
         identity=None, answerprint=None, logging=None, breaker=None,
         upstreams=[], state=StateConfig(directory=tmp_path / "state"),
     )
-    _record_refreshed(cfg, "gpt-4o", "LOW", "official")
+    _record_refreshed(cfg, "openai", "gpt-4o", "LOW", "official")
     events = state.read_baseline_events(model="gpt-4o")
     assert len(events) == 1
     assert events[0]["event"] == "refreshed"
+    assert events[0]["upstream"] == "openai"
     assert events[0]["pressure_level_at_collect"] == "LOW"
     assert events[0]["source"] == "official"
     # 第二笔带出距上次的天数
-    _record_refreshed(cfg, "gpt-4o", "LOW", "official")
+    _record_refreshed(cfg, "openai", "gpt-4o", "LOW", "official")
     events = state.read_baseline_events(model="gpt-4o")
     assert len(events) == 2 and events[1]["days_since_last_refresh"] is not None
+
+
+def test_collect_clears_retired_meta(tmp_path):
+    """退役 → 重采：归档里的退役标记被清除（否则 startup_report 误报 BASIC）。"""
+    from satori_gateway.__main__ import _clear_retired_meta
+    from satori_gateway.config import (
+        BreakerConfig,
+        Config,
+        FingerprintConfig,
+        GatewayConfig,
+        IdentityConfig,
+        LoggingConfig,
+        RecordConfig,
+        RulesConfig,
+        StateConfig,
+    )
+
+    arch = tmp_path / "archive" / "baselines" / "openai--gpt-4o"
+    arch.mkdir(parents=True)
+    (arch / "meta.json").write_text(json.dumps(
+        {"retired_at": 123.0, "reason": "official_update", "reporter": "op"}),
+        encoding="utf-8")
+    cfg = Config(
+        gateway=GatewayConfig(), fingerprint=FingerprintConfig(), canary=[],
+        rules=RulesConfig(), record=RecordConfig(), identity=IdentityConfig(),
+        answerprint=None, logging=LoggingConfig(), breaker=BreakerConfig(),
+        upstreams=[], state=StateConfig(directory=tmp_path / "state",
+                                        archive_dir=tmp_path / "archive"
+                                        / "baselines"),
+    )
+    _clear_retired_meta(cfg, "openai", "gpt-4o")
+    meta = json.loads((arch / "meta.json").read_text(encoding="utf-8"))
+    assert "retired_at" not in meta
+    assert meta["reason"] == "official_update"  # 其余留痕不动
+    # 没有归档目录时是安静的 no-op
+    _clear_retired_meta(cfg, "ghost", "nope")

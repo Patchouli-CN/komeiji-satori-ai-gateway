@@ -143,8 +143,13 @@ class StateStore:
     def read_feedback(self) -> list[dict]:
         return self._read_jsonl(self.feedback_file)
 
-    def read_baseline_events(self, model: str | None = None) -> list[dict]:
+    def read_baseline_events(self, model: str | None = None,
+                             upstream: str | None = None) -> list[dict]:
         events = self._read_jsonl(self.events_file)
+        if upstream is not None:
+            # 旧格式事件没有 upstream 字段——按通配处理（不丢历史学习原料）
+            events = [e for e in events
+                      if e.get("upstream", upstream) == upstream]
         if model is not None:
             events = [e for e in events if e.get("model") == model]
         return events

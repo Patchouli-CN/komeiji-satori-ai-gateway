@@ -123,6 +123,7 @@ def post_feedback(client: TestClient, secret: str, reporter: str,
 
 def seed_events(satori: KomeijiSatori, n: int = 3) -> None:
     for _ in range(n):
+        # 不带 upstream 的旧格式事件：read_baseline_events 按通配兼容
         satori.state.append_baseline_event(
             {"ts": time.time(), "model": "gpt-4o", "event": "refreshed"})
 
@@ -164,6 +165,12 @@ class TestTrustAndLevel:
 
     def test_ttl_zero_returns_zero(self):
         assert trust_score(1.0, 1.0, 5.0, 0.0) == 0.0
+
+    def test_negative_age_clamped_to_one(self):
+        """collected_at 在未来（时钟回拨/异地导入）时 trust 不许超过 1。"""
+        assert trust_score(1.0, 1.0, -5.0, 30.0) == 1.0
+        assert trust_score(2.0, 1.0, -5.0, 30.0) == 1.0  # 来源权重异常也钳住
+        assert 0.0 <= trust_score(1.0, 1.0, 99.0, 30.0) <= 1.0
 
 
 # ---- 溯源与Manager评估 ----
@@ -224,9 +231,37 @@ class TestBaselineManager:
 
     def test_cold_start_boundary(self, env):
         satori, _ = env
-        assert satori.baselines.is_cold_start("gpt-4o") is True
+        assert satori.baselines.is_cold_start("openai", "gpt-4o") is True
         seed_events(satori, 3)
-        assert satori.baselines.is_cold_start("gpt-4o") is False
+        assert satori.baselines.is_cold_start("openai", "gpt-4o") is False
+
+    def test_answers_only_reference_labeled_answers(self, env):
+        """只有答案指纹参考时，reference 字段按实际文件标 answers——
+        不许恒标 fingerprint。"""
+        satori, _ = env
+        fp_cfg = satori.config.fingerprint
+        up = satori.config.upstreams[0]
+        answers_path(fp_cfg, up, "gpt-4o").write_text(
+            json.dumps({"q": "a"}), encoding="utf-8")
+        st = satori.baselines.recompute(*KEY)
+        assert st.reference == "answers"
+        # 无 sidecar → secondhand 0.5 → STANDARD（不到 STRICT）
+        assert st.level is BaselineLevel.STANDARD
+
+    def test_retire_then_recollect_restores_strict(self, env):
+        """退役 → 重新采集 → 退役标记失效，恢复按可信度判别（不再误报 BASIC）。"""
+        satori, _ = env
+        write_refs(satori)
+        satori.baselines.recompute(*KEY)
+        satori.baselines.retire("openai", "gpt-4o", reason="official_update",
+                                reporter="op")
+        assert "Baseline expired" in satori.baselines.startup_report()[0]
+        time.sleep(0.02)  # 保证新参考的 mtime 晚于 retired_at
+        write_refs(satori)  # 重新采集（等价于 satori collect）
+        st = satori.baselines.recompute(*KEY)
+        assert st.level is BaselineLevel.STRICT
+        assert st.retired_at is None
+        assert satori.baselines.startup_report() == []  # 不再误报
 
 
 # ---- 状态持久化（v4 Phase 1.0） ----
@@ -351,7 +386,7 @@ class TestFeedbackEndpoint:
         satori, client = env
         write_refs(satori)
         secret = issue(client, "bob")  # 普通 reporter
-        assert satori.baselines.is_cold_start("gpt-4o")  # 0 条事件
+        assert satori.baselines.is_cold_start("openai", "gpt-4o")  # 0 条事件
         r = post_feedback(client, secret, "bob", {
             "upstream": "openai", "model": "gpt-4o",
             "reason": "official_update", "confirm": True,
@@ -362,13 +397,18 @@ class TestFeedbackEndpoint:
         satori, client = env
         write_refs(satori)
         seed_events(satori, 3)  # 退出冷启动
-        assert not satori.baselines.is_cold_start("gpt-4o")
+        assert not satori.baselines.is_cold_start("openai", "gpt-4o")
         secret = issue(client, "bob")
-        body = {"upstream": "openai", "model": "gpt-4o",
-                "reason": "official_update", "confirm": True}
-        assert post_feedback(client, secret, "bob", body).json()["action"] == "confirm 1/3"
-        assert post_feedback(client, secret, "bob", body).json()["action"] == "confirm 2/3"
-        r = post_feedback(client, secret, "bob", body)
+        # 每次确认带不同 note：完全相同的 confirm 请求体在窗口内算重放，
+        # 只计一次（防重放兜底，见 SECURITY.md）
+        def confirm(note: str):
+            return post_feedback(client, secret, "bob", {
+                "upstream": "openai", "model": "gpt-4o",
+                "reason": "official_update", "confirm": True, "note": note,
+            })
+        assert confirm("第一次").json()["action"] == "confirm 1/3"
+        assert confirm("第二次").json()["action"] == "confirm 2/3"
+        r = confirm("第三次")
         assert r.json()["action"].startswith("retired")  # 第三笔落听
 
     def test_network_jitter_clears_ledger_without_retire(self, env):
@@ -412,6 +452,39 @@ class TestFeedbackEndpoint:
             "reason": "official_update", "confirm": True,
         }, ts=int(time.time()) - 3600)
         assert r.status_code == 401
+
+    def test_confirm_replay_deduped_within_window(self, env):
+        """防重放兜底：窗口内同 reporter 同请求体的 confirm 只计一次——
+        重放合法 confirm 刷不了计数，更退役不了基线。"""
+        satori, client = env
+        write_refs(satori)
+        seed_events(satori, 3)  # 退出冷启动，阈值 3
+        secret = issue(client, "bob")
+        body = {"upstream": "openai", "model": "gpt-4o",
+                "reason": "official_update", "confirm": True}
+        r = post_feedback(client, secret, "bob", body)
+        assert r.json()["action"] == "confirm 1/3"
+        # 抓包重放同一请求体：不计数、不退役
+        r = post_feedback(client, secret, "bob", body)
+        assert r.json()["action"] == "confirm-deduped"
+        assert (satori.config.fingerprint.reference_dir
+                / "openai--gpt-4o.json").exists()
+        # 换 reporter 的相同内容照常计（去重键含 reporter）
+        secret2 = issue(client, "carol")
+        r = post_feedback(client, secret2, "carol", body)
+        assert r.json()["action"] == "confirm 2/3"
+
+    def test_admin_credential_implies_operator_for_retire(self, env):
+        """角色是等级：admin 凭据天然蕴含 operator——确认即退役。"""
+        satori, client = env
+        write_refs(satori)
+        seed_events(satori, 3)
+        secret = issue(client, "boss", roles=["admin"])
+        r = post_feedback(client, secret, "boss", {
+            "upstream": "openai", "model": "gpt-4o",
+            "reason": "official_update", "confirm": True,
+        })
+        assert r.json()["action"].startswith("retired")
 
 
 # ---- 状态透出 ----

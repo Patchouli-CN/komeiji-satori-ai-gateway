@@ -106,7 +106,7 @@ class SecurityConfig:
     # 控制面封印授权（Gate 0 / Phase 6A+6B）。
     # enabled=false 时控制面不鉴权，启动打醒目警告——不安全必须显式选择（默认安全）
     enabled: bool = True
-    # Gate 0 唯一已实现模式；ed25519 留给后续波次
+    # 签名模式：hmac（共享 secret）/ ed25519（非对称，多团队跨网推荐）
     mode: str = "hmac"
     # HMAC 时间戳窗口（秒），防重放
     timestamp_window_seconds: int = 300
@@ -121,6 +121,11 @@ class SecurityConfig:
     require_tls: bool | None = None
     # 信任的反向代理 IP 段（CIDR）。只有这些来源的 X-Forwarded-Proto 才采信
     trusted_proxies: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("hmac", "ed25519"):
+            raise ValueError(
+                f"security.mode 必须是 'hmac' / 'ed25519'，收到 {self.mode!r}")
 
 
 @dataclass(frozen=True)

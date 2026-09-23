@@ -27,6 +27,7 @@ SLOP_ARGS_BLOAT = 10.0      # 参数膨胀 > 8KB
 SLOP_ARGS_BLOAT_BYTES = 8192
 CONFIRM_STEPS = 2           # 同 session 累计几步 suspicious 算实锤
 CONFIRMED_SCORE = 40.0      # 实锤注入分（权重高于 Logprob 的 20；仍受跨线规则钳制）
+MAX_SESSIONS = 1000         # 未实锤 session 的跟踪上限（防无界增长），最久不活动的先淘汰
 
 
 @dataclass
@@ -119,17 +120,32 @@ def score_tool_calls(tool_calls: list[dict],
 
 
 class SlopLedger:
-    """session 级累计：怀疑 → 实锤 → 回溯。实锤后该 session 重新武装。"""
+    """session 级累计：怀疑 → 实锤 → 回溯。实锤后该 session 重新武装。
 
-    def __init__(self, confirm_steps: int = CONFIRM_STEPS) -> None:
+    _sessions 有界（MAX_SESSIONS）：未实锤的 session 槽位按最久不活动
+    淘汰——无 session 头的流量都归并到 上游×模型 兜底键，但自定义
+    session 头的流量可能每请求一个新值，不许它把内存撑爆。
+    """
+
+    def __init__(self, confirm_steps: int = CONFIRM_STEPS,
+                 max_sessions: int = MAX_SESSIONS) -> None:
         self.confirm_steps = confirm_steps
-        self._sessions: dict[str, list[dict]] = {}
+        self.max_sessions = max_sessions
+        self._sessions: dict[str, list[dict]] = {}  # 有序：久未活动的在前
 
     def observe(self, session: str, trace: ToolTrace) -> dict | None:
         """记一笔可疑 trace。累计到阈值返回实锤报告（含回溯原点），否则 None。"""
         if trace.slop_score <= 0:
             return None
-        steps = self._sessions.setdefault(session, [])
+        steps = self._sessions.get(session)
+        if steps is None:
+            while len(self._sessions) >= self.max_sessions:
+                self._sessions.pop(next(iter(self._sessions)))  # 淘汰最旧
+            steps = self._sessions[session] = []
+        else:
+            # 活跃 session 排到队尾（dict 保插入序：pop 再插即移尾）
+            self._sessions[session] = self._sessions.pop(session)
+            steps = self._sessions[session]
         steps.append({"trace_id": trace.trace_id,
                       "first_suspicious": trace.first_suspicious,
                       "score": trace.slop_score,

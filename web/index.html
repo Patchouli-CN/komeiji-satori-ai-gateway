@@ -27,6 +27,7 @@
     min-height: 100vh;
     padding: 24px;
   }
+  .hidden { display: none !important; }
 
   /* ---------- 头部：觉之瞳 ---------- */
   header { display: flex; align-items: center; gap: 20px; margin-bottom: 24px; }
@@ -59,7 +60,7 @@
 
   /* ---------- 连接栏 ---------- */
   .connbar {
-    display: flex; gap: 10px; align-items: center;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 10px; padding: 10px 14px; margin-bottom: 20px;
   }
@@ -73,19 +74,31 @@
     background: var(--lavender); color: #241733; border: none; border-radius: 6px;
     padding: 7px 16px; font-weight: 600; cursor: pointer;
   }
+  .connbar button.ghost {
+    background: transparent; color: var(--dim); border: 1px solid var(--border);
+    font-weight: 400;
+  }
+  .connbar button.ghost:hover { color: var(--lavender); border-color: var(--lavender); }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); }
   .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
   .dot.off { background: var(--red); box-shadow: 0 0 8px var(--red); }
   #connState { font-size: 12px; color: var(--dim); }
+  #secBadge {
+    font-size: 11px; padding: 2px 9px; border-radius: 10px;
+    background: rgba(126, 200, 242, .15); color: var(--blue);
+  }
+  #secBadge.off { background: rgba(255, 107, 129, .18); color: var(--red); font-weight: 700; }
 
   /* ---------- 面板 ---------- */
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
   @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
   .panel {
     background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 16px;
+    border-radius: 10px; padding: 16px; margin-bottom: 16px;
   }
+  .grid .panel { margin-bottom: 0; }
   .panel h2 { font-size: 15px; color: var(--pink); margin-bottom: 12px; letter-spacing: 1px; }
+  .panel h3 { font-size: 13px; color: var(--lavender); margin: 14px 0 8px; }
   .empty { color: var(--dim); font-size: 13px; padding: 8px 0; }
 
   /* 可疑度卡片 */
@@ -93,19 +106,33 @@
   .susp-head { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; }
   .susp-head .who { color: var(--text); }
   .susp-head .num { color: var(--orange); font-variant-numeric: tabular-nums; }
-  .bar { height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; }
-  .bar > div {
+  .bar { height: 8px; background: var(--bg); border-radius: 4px; position: relative; }
+  .bar > .fill {
     height: 100%; border-radius: 4px;
     background: linear-gradient(90deg, var(--lavender), var(--orange), var(--red));
     transition: width .4s ease;
   }
+  .bar .tick { /* WATCH 阈值刻度线 */
+    position: absolute; top: -2px; bottom: -2px; width: 2px;
+    background: var(--orange); opacity: .85; border-radius: 1px;
+  }
   .susp-card.over .num { color: var(--red); font-weight: 700; }
-  .susp-card.over .bar > div { background: var(--red); animation: pulse 1s infinite; }
+  .susp-card.over .bar > .fill { background: var(--red); animation: pulse 1s infinite; }
   .lvl { font-size: 11px; padding: 0 7px; border-radius: 9px; margin-left: 6px; }
   .lvl.SAFETY { background: rgba(126,226,168,.15); color: var(--green); }
   .lvl.WATCH { background: rgba(255,184,107,.18); color: var(--orange); }
   .lvl.DEGRADED { background: rgba(255,107,129,.18); color: var(--red); font-weight: 700; }
   @keyframes pulse { 50% { opacity: .5; } }
+
+  /* 操作按钮（填了 operator 凭据才渲染） */
+  .opbtn {
+    background: var(--panel2); color: var(--lavender);
+    border: 1px solid var(--lavender); border-radius: 6px;
+    padding: 2px 10px; font-size: 11px; cursor: pointer; margin-left: 6px;
+  }
+  .opbtn:hover { background: var(--lavender); color: #241733; }
+  .opbtn.danger { color: var(--red); border-color: var(--red); }
+  .opbtn.danger:hover { background: var(--red); color: #fff; }
 
   /* 核验结果表 */
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -114,6 +141,11 @@
   .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
   .badge.ok { background: rgba(126, 226, 168, .15); color: var(--green); }
   .badge.bad { background: rgba(255, 107, 129, .15); color: var(--red); }
+
+  /* 信任桶徽章 */
+  .bucket { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+  .bucket.trusted { background: rgba(126, 226, 168, .15); color: var(--green); }
+  .bucket.normal { background: rgba(126, 200, 242, .15); color: var(--blue); }
 
   /* 基线判别卡片 */
   .bl-card { margin-bottom: 12px; font-size: 12.5px; }
@@ -125,6 +157,35 @@
   .bl-meta { color: var(--dim); font-size: 11.5px; line-height: 1.6; }
   .bl-meta .warn { color: var(--orange); }
   .bl-meta .dead { color: var(--red); font-weight: 700; }
+  .bl-badge { font-size: 10.5px; padding: 0 6px; border-radius: 8px; margin-left: 5px; }
+  .bl-badge.ttl-cold-start { background: rgba(126, 200, 242, .15); color: var(--blue); }
+  .bl-badge.ttl-median { background: rgba(185, 140, 242, .15); color: var(--lavender); }
+  .bl-badge.ttl-override { background: rgba(255, 184, 107, .18); color: var(--orange); }
+  .bl-badge.expired { background: rgba(255, 107, 129, .2); color: var(--red); font-weight: 700; }
+  .bl-badge.lock { background: rgba(255, 184, 107, .18); color: var(--orange); }
+
+  /* 凭据区 */
+  .credrow { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  .credrow input[type=text], .credrow input[type=password], .credrow input:not([type]), .credrow select {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px;
+    font-size: 13px; outline: none;
+  }
+  .credrow input:focus, .credrow select:focus { border-color: var(--lavender); }
+  .credrow label { display: flex; align-items: center; gap: 4px; }
+  .hint { color: var(--dim); font-size: 11.5px; }
+
+  /* 签发 secret 一次性横幅 */
+  #secretBanner {
+    background: rgba(255, 184, 107, .14); border: 1px solid var(--orange);
+    border-radius: 8px; padding: 12px; margin-bottom: 12px; font-size: 13px;
+  }
+  #secretBanner strong { color: var(--orange); }
+  #secretBanner code {
+    display: block; margin: 8px 0; padding: 8px; background: var(--bg);
+    border-radius: 6px; font-size: 13px; word-break: break-all;
+    user-select: all; color: var(--orange);
+  }
 
   /* 事件流 */
   #feed { max-height: 420px; overflow-y: auto; font-size: 12.5px; }
@@ -149,6 +210,12 @@
   .evt.slop .kind { color: var(--red); font-weight: 700; }
   .evt.test .kind { color: var(--blue); }
   .evt.feedback .kind { color: var(--blue); }
+  .evt.restored { border-left-color: var(--blue); }
+  .evt.restored .kind { color: var(--blue); }
+  .evt.panel.ok { border-left-color: var(--green); }
+  .evt.panel.ok .kind { color: var(--green); }
+  .evt.panel.err { border-left-color: var(--red); background: rgba(255, 107, 129, .12); }
+  .evt.panel.err .kind { color: var(--red); }
   .evt .snip { display: block; color: var(--dim); margin-top: 3px; font-size: 11.5px; word-break: break-all; }
 </style>
 </head>
@@ -158,15 +225,32 @@
   <div class="eye"></div>
   <div>
     <h1>KomeijiSatori<span class="jp">古明地覚</span></h1>
-    <div class="subtitle">覚の瞳は全てを見通す —— AI 网关实时盯梢面板</div>
+    <div class="subtitle">覚の瞳は全てを見通す —— AI 网关实时监控 · 控制台</div>
   </div>
 </header>
 
 <div class="connbar">
   <div class="dot" id="dot"></div>
   <span id="connState">未连接</span>
+  <span id="secBadge" class="hidden"></span>
   <input id="gwUrl" placeholder="网关地址，如 http://127.0.0.1:8400">
   <button onclick="connect()">连接</button>
+  <button class="ghost" onclick="disconnect()">断开</button>
+  <button class="ghost" onclick="$('credPanel').classList.toggle('hidden')">凭据</button>
+</div>
+
+<div class="panel hidden" id="credPanel">
+  <h2>凭据 · 只存内存，断开即焚</h2>
+  <div class="credrow">
+    <input type="password" id="adminSecret" placeholder="Admin 口令（解锁凭据管理面板）" style="min-width:280px">
+    <span class="hint">填入后出现凭据管理面板；不落 localStorage</span>
+  </div>
+  <div class="credrow">
+    <input type="text" id="opReporter" placeholder="Operator reporter_id">
+    <input type="password" id="opSecret" placeholder="Operator secret" style="min-width:240px">
+    <span class="hint">解锁操作按钮（复位熔断 / 基线反馈）。Ed25519 凭据请用 CLI，面板走 HMAC</span>
+  </div>
+  <div class="hint" id="opState"></div>
 </div>
 
 <div class="grid">
@@ -191,6 +275,27 @@
   </div>
 </div>
 
+<div class="panel hidden" id="credAdminPanel">
+  <h2>凭据管理 · 控制面封印</h2>
+  <div id="secretBanner" class="hidden"></div>
+  <div id="credTable"><div class="empty">载入中…</div></div>
+  <h3>签发新凭据</h3>
+  <div class="credrow">
+    <input type="text" id="issueRid" placeholder="reporter_id">
+    <select id="issueTrust">
+      <option value="normal" selected>normal</option>
+      <option value="trusted">trusted</option>
+      <option value="unverified">unverified</option>
+    </select>
+    <label class="hint"><input type="checkbox" id="roleReporter" checked> reporter</label>
+    <label class="hint"><input type="checkbox" id="roleOperator"> operator</label>
+    <label class="hint"><input type="checkbox" id="roleAdmin"> admin</label>
+    <button class="opbtn" onclick="issueCredential()">签发</button>
+  </div>
+  <div class="hint">签名方式固定 HMAC（面板只走 HMAC；Ed25519 凭据请用 CLI 签发）。
+    签发返回的 secret 仅此一次回显——立即保存，丢失只能吊销重签。</div>
+</div>
+
 <div class="panel">
   <h2>实时事件流</h2>
   <div id="feed"><div class="empty">连接后开始推送</div></div>
@@ -198,9 +303,19 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-let ws = null, reconnectTimer = null;
+let ws = null, reconnectTimer = null, manualClose = false;
+let lastStatus = null;          // 最近一次全量快照（重渲染操作按钮用）
+let credLoadTimer = null;
+
+/* 凭据只活在这三个 JS 变量里——绝不进 localStorage，断开连接即清空 */
+let adminSecret = "";
+let opReporter = "";
+let opSecret = "";
 
 $("gwUrl").value = localStorage.getItem("satori.gw") || "http://127.0.0.1:8400";
+
+const esc = (s) => String(s).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleTimeString("zh-CN", { hour12: false });
@@ -211,44 +326,133 @@ function setConn(state, cls) {
   $("dot").className = "dot " + cls;
 }
 
+const hasAdmin = () => !!adminSecret;
+const hasOperator = () => !!(opReporter && opSecret);
+const detailOf = (r) =>
+  (r.data && (r.data.detail || r.data.error)) || "（无详情）";
+
+/* ---------- 签名助手：与服务端 sign_request 逐字节对齐 ---------- */
+
+async function hmacSign(secret, ts, nonce, bodyStr) {
+  // 服务端（security.py HMACVerifier）：HMAC-SHA256(secret.encode(),
+  //   f"{ts}.{nonce}.".encode() + body)——body 是线上原始字节。
+  // 这里 bodyStr 就是传给 fetch 的同一个字符串，TextEncoder 按 UTF-8
+  // 编码，与线上字节一致；hex 小写输出与 hexdigest() 对齐。
+  if (!crypto.subtle) {
+    throw new Error("WebCrypto 不可用——请用 http://127.0.0.1 或 https 打开面板"
+      + "（部分浏览器在 file:// 下禁用 crypto.subtle）");
+  }
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key,
+    enc.encode(`${ts}.${nonce}.${bodyStr}`));
+  return Array.from(new Uint8Array(sig),
+    (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function sendControl(path, payload) {
+  const base = $("gwUrl").value.replace(/\/+$/, "");
+  try {
+    const bodyStr = JSON.stringify(payload);
+    const ts = Math.floor(Date.now() / 1000);
+    const nonce = crypto.randomUUID();  // 永远带 nonce：一次性防重放
+    const sig = await hmacSign(opSecret, ts, nonce, bodyStr);
+    const r = await fetch(base + path, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Satori-Reporter": opReporter,
+        "X-Satori-Timestamp": String(ts),
+        "X-Satori-Signature": sig,
+        "X-Satori-Nonce": nonce,
+      },
+      body: bodyStr,
+    });
+    let data = null;
+    try { data = await r.json(); } catch {}
+    return { ok: r.ok, status: r.status, data };
+  } catch (err) {
+    return { ok: false, status: 0, data: { detail: String(err) } };
+  }
+}
+
+async function sendAdmin(path, opts = {}) {
+  const base = $("gwUrl").value.replace(/\/+$/, "");
+  try {
+    const r = await fetch(base + path, {
+      method: opts.method || "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Satori-Admin-Secret": adminSecret,
+      },
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    });
+    let data = null;
+    try { data = await r.json(); } catch {}
+    return { ok: r.ok, status: r.status, data };
+  } catch (err) {
+    return { ok: false, status: 0, data: { detail: String(err) } };
+  }
+}
+
 /* ---------- 渲染 ---------- */
 
-function renderSuspicion(list, breakerSet = new Set()) {
+function renderSuspicion(list, breakerMap) {
   const box = $("suspicion");
-  if (!list.length && !breakerSet.size) {
+  const keys = new Set(list.map((s) => s.upstream + "/" + s.model));
+  const breakerKeys = Object.keys(breakerMap);
+  if (!list.length && !breakerKeys.length) {
     box.innerHTML = '<div class="empty">暂无数据 —— 觉大人还没起疑心</div>';
     return;
   }
-  box.innerHTML = list.map(s => {
-    const pct = Math.min(100, (s.score / s.threshold) * 100);
+  const resetBtn = (up, model) => hasOperator()
+    ? `<button class="opbtn" data-act="reset" data-up="${esc(up)}" data-model="${esc(model)}">复位熔断</button>` : "";
+  const brInfo = (key) => {
+    const br = breakerMap[key];
+    return br ? `<div class="bl-meta">熔断于 ${fmtTime(br.since)} · 已拦截 ${br.blocked} 次</div>` : "";
+  };
+  let html = list.map((s) => {
+    const th = s.threshold || 50;
+    const pct = Math.min(100, (s.score / th) * 100);
     const key = s.upstream + "/" + s.model;
-    const tripped = breakerSet.has(key);
-    const over = (s.score >= s.threshold || tripped) ? " over" : "";
+    const tripped = key in breakerMap;
+    const over = (s.score >= th || tripped) ? " over" : "";
     const lvl = s.level ? `<span class="lvl ${s.level}">${s.level}</span>` : "";
     const badge = tripped ? ' <span style="color:var(--red);font-weight:700">🚫已熔断</span>' : "";
+    // WATCH 阈值刻度线：黄线之前安心，过了线觉大人开始盯
+    const tick = s.watch_threshold
+      ? `<div class="tick" style="left:${Math.min(100, (s.watch_threshold / th) * 100)}%"></div>` : "";
     const split = (s.identity || s.quality)
       ? `<div class="bl-meta">质量 ${s.quality || 0} + 身份 ${s.identity || 0}（身份洗不掉）</div>` : "";
     return `<div class="susp-card${over}">
       <div class="susp-head">
-        <span class="who">${key}${lvl}${badge}</span>
-        <span class="num">${s.score} / ${s.threshold}</span>
+        <span class="who">${esc(key)}${lvl}${badge}${tripped ? resetBtn(s.upstream, s.model) : ""}</span>
+        <span class="num">${s.score} / ${th}</span>
       </div>
-      <div class="bar"><div style="width:${pct}%"></div></div>
-      ${split}
+      <div class="bar"><div class="fill" style="width:${pct}%"></div>${tick}</div>
+      ${brInfo(key)}${split}
     </div>`;
   }).join("");
   // 已熔断但账本已清零的（score=0 不复位前仍展示）
-  for (const key of breakerSet) {
-    if (!list.some(s => s.upstream + "/" + s.model === key)) {
-      box.innerHTML += `<div class="susp-card over">
-        <div class="susp-head">
-          <span class="who">${key} <span style="color:var(--red);font-weight:700">🚫已熔断</span></span>
-          <span class="num">-</span>
-        </div>
-        <div class="bar"><div style="width:100%"></div></div>
-      </div>`;
-    }
+  for (const key of breakerKeys) {
+    if (keys.has(key)) continue;
+    const [up, model] = splitKey(key);
+    html += `<div class="susp-card over">
+      <div class="susp-head">
+        <span class="who">${esc(key)} <span style="color:var(--red);font-weight:700">🚫已熔断</span>${resetBtn(up, model)}</span>
+        <span class="num">-</span>
+      </div>
+      <div class="bar"><div class="fill" style="width:100%"></div></div>
+      ${brInfo(key)}
+    </div>`;
   }
+  box.innerHTML = html;
+}
+
+function splitKey(key) {
+  const i = key.indexOf("/");
+  return i < 0 ? [key, ""] : [key.slice(0, i), key.slice(i + 1)];
 }
 
 function renderChecks(list) {
@@ -256,11 +460,11 @@ function renderChecks(list) {
   if (!list.length) { box.innerHTML = '<div class="empty">暂无核验结果</div>'; return; }
   box.innerHTML = `<table>
     <tr><th>checker</th><th>上游/模型</th><th>结果</th><th>详情</th></tr>
-    ${list.map(c => `<tr>
-      <td>${c.checker}</td>
-      <td>${c.upstream}/${c.model}</td>
+    ${list.map((c) => `<tr>
+      <td>${esc(c.checker)}</td>
+      <td>${esc(c.upstream)}/${esc(c.model)}</td>
       <td><span class="badge ${c.ok ? "ok" : "bad"}">${c.ok ? "OK" : "NG"}</span></td>
-      <td>${c.detail}</td>
+      <td>${esc(c.detail)}</td>
     </tr>`).join("")}
   </table>`;
 }
@@ -271,27 +475,44 @@ function renderBaselines(list) {
     box.innerHTML = '<div class="empty">暂无基线 —— 第三只眼还没找到参考</div>';
     return;
   }
-  box.innerHTML = list.map(b => {
+  box.innerHTML = list.map((b) => {
     const cold = b.cold_start
       ? ' <span class="bl-level" style="background:rgba(126,226,255,.15);color:var(--blue)">🐣 启蒙中</span>' : "";
     const closed = b.level === "BASIC"
       ? ' <span style="color:var(--red);font-weight:700">👁 已闭合</span>' : "";
+    const expired = b.expired
+      ? ' <span class="bl-badge expired">已过期</span>' : "";
     const retired = b.retired_at
       ? ` <span style="color:var(--red)">退役于 ${fmtTime(b.retired_at)}</span>` : "";
-    let ttl = "无参考时间", ttlCls = "";
+    let ttl = "无参考时间", ttlCls = "", ttlSrc = "", fresh = "—";
     if (b.ttl) {
       ttl = `${b.ttl.age_days}/${b.ttl.ttl_days}天（${(b.ttl.consumed * 100).toFixed(0)}%）`;
       ttlCls = b.ttl.state === "expired" ? "dead"
         : (b.ttl.state === "fresh" ? "" : "warn");
+      ttlSrc = ` <span class="bl-badge ttl-${esc(b.ttl.source)}">TTL·${esc(b.ttl.source)}</span>`;
+      fresh = Math.max(0, (1 - Math.min(b.ttl.consumed, 1)) * 100).toFixed(0) + "%";
     }
+    const ov = b.ttl_override
+      ? ` <span class="bl-badge lock">🔒 锁定 ${b.ttl_override.ttl_days}天`
+        + (b.ttl_override.reason ? `（${esc(b.ttl_override.reason)}）` : "") + "</span>" : "";
+    // trust 分解：来源权重 × 压力权重 × 新鲜度 → trust（baseline.py trust_score）
+    const trustLine = `<div class="bl-meta">信任分解：来源 ${esc(b.source)} × 压力 ${esc(b.pressure)} × 新鲜度 ${fresh} → 信任 ${b.trust}</div>`;
+    const op = hasOperator()
+      ? `<div style="margin-top:5px">
+          <button class="opbtn" data-act="fb" data-reason="official_update"
+            data-up="${esc(b.upstream)}" data-model="${esc(b.model)}">确认官方更新</button>
+          <button class="opbtn" data-act="fb" data-reason="false_alarm"
+            data-up="${esc(b.upstream)}" data-model="${esc(b.model)}">误报</button>
+        </div>` : "";
     return `<div class="bl-card">
       <div class="bl-head">
-        <span class="who">${b.upstream}/${b.model}${cold}${closed}</span>
+        <span class="who">${esc(b.upstream)}/${esc(b.model)}${cold}${closed}${expired}${ttlSrc}${ov}</span>
         <span class="bl-level ${b.level}">${b.level}</span>
       </div>
-      <div class="bl-meta">来源 ${b.source}${b.pressure ? "·" + b.pressure : ""}
-        · 信任 ${b.trust} · TTL <span class="${ttlCls}">${ttl}</span>
-        · ${b.reference || "无参考"}${retired}</div>
+      ${trustLine}
+      <div class="bl-meta">TTL <span class="${ttlCls}">${ttl}</span>
+        · ${esc(b.reference || "无参考")}${retired}</div>
+      ${op}
     </div>`;
   }).join("");
 }
@@ -301,11 +522,14 @@ function renderTrials(tests, slop) {
   const parts = [];
   if (tests && tests.length) {
     parts.push(`<table>
-      <tr><th>套件 :: 测试</th><th>归属</th><th>通过/总数</th></tr>
-      ${tests.map(t => `<tr>
-        <td>${t.test_suite} :: ${t.test_name}${t.unreliable
+      <tr><th>套件 :: 测试</th><th>归属</th><th>信任桶</th><th>通过/总数</th></tr>
+      ${tests.map((t) => `<tr>
+        <td>${esc(t.test_suite)} :: ${esc(t.test_name)}${t.unreliable
           ? ' <span class="bl-level BASIC">flaky</span>' : ""}</td>
-        <td>${t.upstream}/${t.model}</td>
+        <td>${esc(t.upstream)}/${esc(t.model)}</td>
+        <td>${t.trust_bucket
+          ? `<span class="bucket ${esc(t.trust_bucket)}">${esc(t.trust_bucket.toUpperCase())}</span>`
+          : "-"}</td>
         <td>${t.total - t.failed}/${t.total}${t.failed ? " ✗" + t.failed : ""}</td>
       </tr>`).join("")}
     </table>`);
@@ -314,10 +538,34 @@ function renderTrials(tests, slop) {
       + '或 satori-test-report 接入</div>');
   }
   if (slop && slop.length) {
-    parts.push(`<div class="bl-meta" style="margin-top:8px">Slop 怀疑累积：${slop.map(s =>
-      `${s.session} ×${s.suspicious_steps}`).join("，")}（同 session 累计 2 步即实锤）</div>`);
+    parts.push(`<div class="bl-meta" style="margin-top:8px">Slop 怀疑累积：${slop.map((s) =>
+      `${esc(s.session)} ×${s.suspicious_steps}`).join("，")}（同 session 累计 2 步即实锤）</div>`);
   }
   box.innerHTML = parts.join("");
+}
+
+function renderCredentials(list) {
+  const box = $("credTable");
+  if (!list.length) {
+    box.innerHTML = '<div class="empty">暂无凭据 —— 用下方表单签发第一张</div>';
+    return;
+  }
+  box.innerHTML = `<table>
+    <tr><th>reporter_id</th><th>trust</th><th>roles</th><th>method</th>
+      <th>status</th><th>last_seen</th><th></th></tr>
+    ${list.map((c) => `<tr>
+      <td>${esc(c.reporter_id)}</td>
+      <td>${esc(c.trust_level)}</td>
+      <td>${esc((c.roles || []).join(", "))}</td>
+      <td>${esc(c.method)}</td>
+      <td><span class="badge ${c.status === "active" ? "ok" : "bad"}">${esc(c.status)}</span></td>
+      <td>${c.last_seen_at ? fmtTime(c.last_seen_at)
+        + (c.last_seen_ip ? ` · ${esc(c.last_seen_ip)}` : "") : "-"}</td>
+      <td>${c.status === "active"
+        ? `<button class="opbtn danger" data-act="revoke" data-rid="${esc(c.reporter_id)}">吊销</button>`
+        : ""}</td>
+    </tr>`).join("")}
+  </table>`;
 }
 
 function addEvent(e) {
@@ -333,7 +581,7 @@ function addEvent(e) {
       + (e.total_ms != null ? ` · 共 ${e.total_ms}ms · ${e.bytes}B` : "");
   } else if (e.type === "suspicion") {
     body = `${e.upstream}/${e.model} 可疑度 ${e.gained >= 0 ? "+" : ""}${e.gained} → ${e.total}`
-      + `（${e.hits.map(h => h.rule).join(", ")}）`;
+      + `（${e.hits.map((h) => h.rule).join(", ")}）`;
   } else if (e.type === "alert") {
     body = `覚「想起うさぎは警戒を」 ${e.upstream}/${e.model} 可疑度 ${e.total} 越界（阈值 ${e.threshold}）`;
   } else if (e.type === "breaker") {
@@ -358,40 +606,198 @@ function addEvent(e) {
       ? `覚「偽りの魂に、真の力は宿らない」 ${e.upstream}/${e.model} Slop 实锤`
         + `（session ${e.session}，起源 ${e.origin_trace} 步#${e.origin_step}）`
       : `${e.upstream}/${e.model} 工具链可疑 score=${e.slop_score}（首个突变步 #${e.first_suspicious}）`;
+  } else if (e.type === "restored") {
+    const led = e.ledger || {};
+    body = "账本快照已从磁盘恢复——重启不失忆"
+      + `（可疑度 ${Object.keys(led.suspicion || {}).length} 条`
+      + ` · 熔断 ${Object.keys(led.breakers || {}).length} 个）`;
+  } else if (e.type === "panel") {
+    kind = "[panel]";
+    body = e.body || "";
   } else if (e.type === "snapshot") {
     body = "已同步全量快照";
   }
 
   const div = document.createElement("div");
-  div.className = "evt " + e.type;
+  div.className = "evt " + e.type
+    + (e.type === "panel" ? (e.ok ? " ok" : " err") : "");
   const ts = e.ts || Date.now() / 1000;
-  div.innerHTML = `<span class="t">${fmtTime(ts)}</span><span class="kind">${kind}</span>${body}`
-    + (e.hits ? e.hits.map(h =>
-        `<span class="snip">[${h.field}] ${h.rule}: …${h.snip}… ${h.description || ""}</span>`
+  div.innerHTML = `<span class="t">${fmtTime(ts)}</span><span class="kind">${esc(kind)}</span>${esc(body)}`
+    + (e.hits ? e.hits.map((h) =>
+        `<span class="snip">[${esc(h.field)}] ${esc(h.rule)}: …${esc(h.snip)}… ${esc(h.description || "")}</span>`
       ).join("") : "");
   feed.prepend(div);
   while (feed.children.length > 200) feed.lastChild.remove();
 }
 
+/* 面板本地操作结果：以 [panel] 合成事件插入事件流顶部 */
+function panelEvent(ok, text) {
+  addEvent({ type: "panel", ok, body: text, ts: Date.now() / 1000 });
+}
+
+/* ---------- 控制台操作（operator 凭据解锁） ---------- */
+
+async function resetBreaker(up, model) {
+  const r = await sendControl("/satori/breaker/reset", { upstream: up, model });
+  if (r.ok) {
+    panelEvent(true, `复位熔断 ${up}/${model} → ${r.data.reset ? "已复位" : "熔断器本就闭合"}`);
+    refreshStatus();
+  } else {
+    panelEvent(false, `复位熔断 ${up}/${model} 失败 [${r.status}] ${detailOf(r)}`);
+  }
+}
+
+async function sendFeedback(up, model, reason) {
+  const label = reason === "official_update" ? "确认官方更新" : "误报";
+  const note = prompt(`${up}/${model} ${label}——备注（可选；取消则放弃操作）：`, "");
+  if (note === null) return;
+  const r = await sendControl("/satori/baseline/feedback",
+    { upstream: up, model, reason, note, confirm: true });
+  if (r.ok) {
+    panelEvent(true, `${label} ${up}/${model} → ${(r.data && r.data.action) || "recorded"}`);
+    refreshStatus();
+  } else {
+    panelEvent(false, `${label} ${up}/${model} 失败 [${r.status}] ${detailOf(r)}`);
+  }
+}
+
+/* ---------- 凭据管理（admin 口令解锁） ---------- */
+
+async function loadCredentials() {
+  if (!hasAdmin()) return;
+  const r = await sendAdmin("/satori/admin/credentials");
+  const box = $("credTable");
+  if (!r.ok) {
+    box.innerHTML = `<div class="empty">凭据列表拉取失败 [${r.status}] ${esc(detailOf(r))}</div>`;
+    return;
+  }
+  renderCredentials((r.data && r.data.credentials) || []);
+}
+
+async function issueCredential() {
+  const rid = $("issueRid").value.trim();
+  const roles = [];
+  if ($("roleReporter").checked) roles.push("reporter");
+  if ($("roleOperator").checked) roles.push("operator");
+  if ($("roleAdmin").checked) roles.push("admin");
+  if (!rid) { panelEvent(false, "签发失败：reporter_id 不能为空"); return; }
+  if (!roles.length) { panelEvent(false, "签发失败：至少勾选一个角色"); return; }
+  const r = await sendAdmin("/satori/admin/credentials", {
+    method: "POST",
+    body: { reporter_id: rid, trust_level: $("issueTrust").value,
+            roles, method: "hmac" },
+  });
+  if (r.ok) {
+    showSecretBanner(r.data.secret, rid);
+    panelEvent(true, `签发凭据 ${rid}（trust=${r.data.trust_level},`
+      + ` roles=${r.data.roles.join("/")}, method=${r.data.method}）`);
+    $("issueRid").value = "";
+    loadCredentials();
+  } else {
+    panelEvent(false, `签发凭据 ${rid} 失败 [${r.status}] ${detailOf(r)}`);
+  }
+}
+
+function showSecretBanner(secret, rid) {
+  const b = $("secretBanner");
+  b.classList.remove("hidden");
+  b.innerHTML = `<strong>⚠ 凭据 ${esc(rid)} 的 secret 仅此一次展示——请立即复制保存，
+      关闭后永远无法再次查看，丢失只能吊销重签。</strong>
+    <code>${esc(secret)}</code>
+    <button class="opbtn" onclick="dismissSecretBanner()">我已保存，销毁横幅</button>`;
+}
+
+function dismissSecretBanner() {
+  const b = $("secretBanner");
+  b.classList.add("hidden");
+  b.innerHTML = "";
+}
+
+async function revokeCredential(rid) {
+  if (!confirm(`吊销凭据 ${rid}？吊销立即生效（记录保留供审计追溯）。`)) return;
+  const r = await sendAdmin("/satori/admin/credentials/" + encodeURIComponent(rid),
+    { method: "DELETE" });
+  if (r.ok) {
+    panelEvent(true, `吊销凭据 ${rid} ✓`);
+    loadCredentials();
+  } else {
+    panelEvent(false, `吊销凭据 ${rid} 失败 [${r.status}] ${detailOf(r)}`);
+  }
+}
+
+/* 操作按钮的事件委托（避免把上游/模型名拼进 onclick 引号地狱） */
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-act]");
+  if (!b) return;
+  const d = b.dataset;
+  if (d.act === "reset") resetBreaker(d.up, d.model);
+  else if (d.act === "fb") sendFeedback(d.up, d.model, d.reason);
+  else if (d.act === "revoke") revokeCredential(d.rid);
+});
+
+/* ---------- 凭据输入 → 解锁/上锁 ---------- */
+
+function updateCredUI() {
+  const admin = hasAdmin();
+  $("credAdminPanel").classList.toggle("hidden", !admin);
+  $("opState").textContent = hasOperator()
+    ? `· 操作台已解锁（${opReporter}，HMAC 签名，带 nonce）` : "";
+  if (admin) {
+    // 边输边拉会刷一串 401——稍停半秒再拉
+    if (credLoadTimer) clearTimeout(credLoadTimer);
+    credLoadTimer = setTimeout(loadCredentials, 500);
+  }
+  if (lastStatus) applyStatus(lastStatus);  // 重渲染以挂上/摘掉操作按钮
+}
+
+$("adminSecret").addEventListener("input", (e) => {
+  adminSecret = e.target.value;
+  updateCredUI();
+});
+$("opReporter").addEventListener("input", (e) => {
+  opReporter = e.target.value.trim();
+  updateCredUI();
+});
+$("opSecret").addEventListener("input", (e) => {
+  opSecret = e.target.value;
+  updateCredUI();
+});
+
 /* ---------- 状态同步 ---------- */
 
-let suspicionMap = {}; // "up/model" -> {upstream, model, score, threshold}
+let suspicionMap = {}; // "up/model" -> status 里的 suspicion 条目
+let breakerMap = {};   // "up/model" -> {upstream, model, since, blocked}
 
-async function refreshStatus(base) {
+function applyStatus(data) {
+  lastStatus = data;
+  suspicionMap = {};
+  for (const s of data.suspicion || []) suspicionMap[s.upstream + "/" + s.model] = s;
+  breakerMap = {};
+  for (const b of data.breakers || []) breakerMap[b.upstream + "/" + b.model] = b;
+  const sec = data.security || {};
+  const badge = $("secBadge");
+  badge.classList.remove("hidden");
+  if (sec.enabled) {
+    badge.textContent = `鉴权 ${sec.mode || ""}`.trim();
+    badge.classList.remove("off");
+  } else {
+    badge.textContent = "鉴权关闭";
+    badge.classList.add("off");
+  }
+  renderSuspicion(Object.values(suspicionMap), breakerMap);
+  renderChecks(data.checks || []);
+  renderBaselines(data.baselines || []);
+  renderTrials(data.tests, data.slop);
+}
+
+async function refreshStatus() {
+  const base = $("gwUrl").value.replace(/\/+$/, "");
   try {
     const r = await fetch(base + "/satori/status");
-    const data = await r.json();
-    suspicionMap = {};
-    for (const s of data.suspicion) suspicionMap[s.upstream + "/" + s.model] = s;
-    const breakerSet = new Set((data.breakers || []).map(b => b.upstream + "/" + b.model));
-    renderSuspicion(Object.values(suspicionMap), breakerSet);
-    renderChecks(data.checks);
-    renderBaselines(data.baselines || []);
-    renderTrials(data.tests, data.slop);
+    applyStatus(await r.json());
   } catch (err) {
     // 拉不到状态（网关不在/重连中）：不往事件流塞警报——
     // 连接状态由左上角指示灯与文字负责，事件流只承载服务端推送的事件。
-    // （此前每次重连循环都会在这里刷一条 alert，断开时满屏假警报）
     console.debug("[satori] status 拉取失败:", err);
   }
 }
@@ -401,32 +807,52 @@ async function refreshStatus(base) {
 function connect() {
   const base = $("gwUrl").value.replace(/\/+$/, "");
   localStorage.setItem("satori.gw", base);
+  manualClose = false;
   if (ws) ws.close();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
   setConn("连接中…", "");
-  refreshStatus(base);
+  refreshStatus();
 
   ws = new WebSocket(base.replace(/^http/, "ws") + "/satori/live");
   ws.onopen = () => setConn("已连接 · 觉之瞳睁开了", "on");
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data);
     addEvent(e);
-    if (e.type === "suspicion") {
+    if (e.type === "snapshot") {
+      applyStatus(e.results);  // 快照自带全量状态，不用再拉一次
+    } else if (e.type === "suspicion") {
       const key = e.upstream + "/" + e.model;
-      const th = (suspicionMap[key] || {}).threshold || 50;
-      suspicionMap[key] = { upstream: e.upstream, model: e.model, score: e.total, threshold: th };
-      renderSuspicion(Object.values(suspicionMap));
-    } else if (e.type === "snapshot" || e.type === "baseline" || e.type === "ttl"
-        || e.type === "test" || e.type === "slop" || e.type === "feedback") {
-      refreshStatus(base);  // 这些事件改的是状态面板，拉一次全量最稳
+      const prev = suspicionMap[key] || {};
+      suspicionMap[key] = { ...prev, upstream: e.upstream, model: e.model,
+        score: e.total, threshold: prev.threshold || 50 };
+      renderSuspicion(Object.values(suspicionMap), breakerMap);
+    } else if (e.type === "baseline" || e.type === "ttl" || e.type === "test"
+        || e.type === "slop" || e.type === "feedback" || e.type === "breaker"
+        || e.type === "restored") {
+      refreshStatus();  // 这些事件改的是状态面板，拉一次全量最稳
     }
   };
   ws.onclose = () => {
+    if (manualClose) return;
     setConn("断开，3s 后重连…", "off");
     reconnectTimer = setTimeout(connect, 3000);
   };
   ws.onerror = () => ws.close();
+}
+
+/* 显式断开：停止重连，焚毁内存里的凭据（密钥安全的最后一道） */
+function disconnect() {
+  manualClose = true;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (ws) { ws.close(); ws = null; }
+  adminSecret = opReporter = opSecret = "";
+  $("adminSecret").value = "";
+  $("opReporter").value = "";
+  $("opSecret").value = "";
+  dismissSecretBanner();
+  updateCredUI();
+  setConn("已断开 · 凭据已焚毁", "off");
 }
 
 connect();

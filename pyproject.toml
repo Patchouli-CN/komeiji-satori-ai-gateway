@@ -5,7 +5,8 @@ description = "KomeijiSatori — an AI gateway that reads the minds of upstream 
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
-    "uvicorn>=0.30",
+    # standard extra 提供 websockets——/satori/live 实时推送频道依赖它
+    "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "loguru>=0.7",
     # Windows 的 zoneinfo 没有系统时区库，靠 tzdata 提供（ProviderPressure 用）

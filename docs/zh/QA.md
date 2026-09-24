@@ -1,141 +1,162 @@
 # Q&A · 常见问题
 
-## 定位与原理
+> 按"你现在的处境"组织，不按功能。每条的答案给出处，细节链到 [HANDBOOK.md](HANDBOOK.md) 和 [SECURITY.md](SECURITY.md)。
 
-### Q: Satori 是什么？
+## 上手前
 
-一个架在你和 AI 上游之间的多协议网关（OpenAI Chat / Anthropic Messages / OpenAI Responses）。客户端无感接入，它在后台对每一滴流量做多层检测：模型掉包、静默路由、悄悄降智，都会被记入可疑度账本并实时告警；越界还可熔断拉闸，低质量输出直接停工。
+### Q: 这东西到底是什么，一句话？
+
+架在你和 AI 上游之间的网关。客户端照常发请求，它在后台持续回答一个问题：端上来的还是当初那个模型吗？发现不对就记分、告警，越界还能熔断拉闸。
 
 ### Q: 为什么叫古明地觉？
 
-《东方地灵殿》的觉妖怪，读心术看穿一切表象。厂商端上来的是什么模型，觉大人看一眼（的分布）就知道。
+《东方地灵殿》的觉妖怪，天生第三只眼，读心术看穿一切表象，所以被人惧怕厌恶。做对抗掺水的工具，这个名字没有第二个候选。代码里那些 覚「…」 的告警台词是符卡传统，不是卖萌——每条都长在具体的检测场景上。
 
-### Q: 它怎么发现模型被掉包了？
+### Q: 跟 litellm / one-api 什么关系？
 
-纵深防御，没有单一银弹：
+不冲突，也不重叠。它们是路由和计费网关，管"请求发给谁、花了多少钱"；Satori 管"回来的货对不对"。你可以把它串在那些网关前面或后面，也可以单用。
 
-- **logprob 声纹**：token 分布是模型的物理属性，蒸馏能偷人设但偷不了分布
-- **答案指纹**：固定题组 temp=0 作答与官方参考算相似度，纯黑盒——Claude 系（无 logprobs）的主力通道
-- **usage 分词侧信道**：同一文本的 token 计数暴露分词器，换人即漂移（自基线，零成本）
-- **计费一致性**：completion_tokens 与实收文本比例漂移，抓 token 虚报/计费克扣
-- **身份题组**：多问法交叉验证，厂商自报矛盾、知识截止年漂移都是马脚
-- **金丝雀考题**：有标准答案的能力题，降智直接体现在通过率上
-- **业务测试锚点**：你自己测试套件的通过率——降级必然能力下降，套件连败就是实锤，且供应商无法伪造
-- **规则引擎**：口癖、伪装提示词泄漏、CoT 语言穿帮，17 条内置 + 自己写
-- **延迟画像**：首字节延迟的基础设施签名，漂移自基线检测
-- **命中率通道**：严重规则命中率超阈值告警，专治"90% 真 10% 假"掺水
-- **Slop 链级审计**：工具调用的参数 JSON 断裂/幻觉工具/复读——降级模型污染下游的典型形态
+### Q: 厂商能不能反过来骗过它？
 
-全部命中汇入一本双组件账本（质量类 + 身份类），按 `SAFETY → WATCH → DEGRADED` 三级升级。
-
-### Q: 厂商能不能反过来骗过 Satori？
-
-可以掐掉单个字段（比如不返回 logprobs），但**掐不掉行为本身**——只要模型还在产出文本，产出就是证据。更狠的一招是拿一个"能过你测试套件的同级模型"换掉你付钱的模型：质量维度放行，但**身份账本**（声纹/答案指纹）记着这笔账，测试 PASS 洗不掉。每层检测假设的配合度不同，全掐掉的代价高到不划算。这就是"不完全依赖大厂"的设计哲学。
+单个通道都能被针对性绕过，这是实话。但每个通道假设的配合度不同：掐掉 logprobs，答案指纹还在；伪造 usage，文本层通道还在；拿"能过你测试套件的同级模型"狸猫换太子，质量维度放行了，身份账本（声纹/答案指纹）还记着——测试 PASS 一分都洗不掉。全部绕过的成本比老实做生意高，这就是纵深防御的全部意义。
 
 ### Q: 蒸馏模型真心相信自己是 Claude，还能抓到吗？
 
-内容通道抓不到（它没"撒谎"，是"失忆"），但 logprob 声纹抓得到——嘴上可以冒充，token 分布冒充不了；不支持 logprobs 的端点则用**答案指纹**：作答习惯同样偷不走。所以**正式使用前务必用官方 key 采参考**（`satori collect` 采声纹、`satori answers` 采作答），否则这两条通道空转。
+内容通道抓不到——它没撒谎，是失忆。但声纹抓得到：嘴上可以冒充，首 token 的分布冒充不了。没有 logprobs 的端点就用答案指纹，作答习惯同样偷不走。前提是**正式使用前从官方端点采过参考**（`satori collect` / `satori answers`），否则这两条通道空转。
 
-### Q: 两轴模型是什么？为什么测试 PASS 洗不掉身份嫌疑？
+## 通道相关
 
-裁决建立在两个正交的轴上，缺一即被绕过：
+### Q: 为什么我的 Anthropic 上游 fingerprint 通道一直"跳过"？
 
-| 轴 | 管什么 | 实现 |
-|---|---|---|
-| 信任轴 | 谁的 PASS/FAIL 有分量 | TrustLevel：TRUSTED（PASS 可衰减、FAIL 可熔断）/ NORMAL（仅记录）/ UNVERIFIED（仅记录） |
-| 信号轴 | 什么嫌疑能被 PASS 洗白 | PASS 只衰减**质量类** hit（规则/计费/延迟/Slop/测试），且洗不穿负分地板；**身份类** hit（声纹 JS/答案指纹）不可被任何测试结果洗白 |
+因为 Anthropic API 不返回 logprobs，这条通道对它天然不存在——不是配置错了。`protocol = "anthropic"` 的上游连 `satori collect` 都会直接报错拒绝。正确姿势：
 
-翻译：就算攻击者拿了 TRUSTED 凭据疯狂刷测试 PASS，"这是不是当初那个模型"的账也一分不会少。身份解冻只有两条路——重新采集基线，或 operator 显式裁决（`POST /satori/baseline/identity-cleared`）。
+```bash
+satori answers --upstream anthropic --model claude-sonnet-4-5   # 答案指纹，主力通道
+```
 
-## 使用
+再辅以身份探针、规则引擎、三条侧信道。实在想要声纹，可以从可信第三方采二手参考（`--source secondhand`，信任权重对折，sidecar 记着出身）。
 
-### Q: 会产生额外 API 费用吗？
+### Q: 身份探针和金丝雀为什么失败了不扣可疑度？
 
-会。声纹指纹、答案指纹、身份题组、金丝雀都是真实 API 调用，按 `check_interval_seconds` 周期执行。上游多、模型多时留意账单；可以调大周期、调小 `identity.sample_size`、或按需禁用 checker。规则引擎、三条侧信道、命中率通道零额外请求，白嫖工作流量。**BASIC 档下身份通道连探针都不发**——参考过期闭眼期间，这部分费用也省了。
+故意的。供词类信号（自报厂商）和单题通过率都不配单独定罪——它们只上事件流和面板，是给你看的哨兵。自动扣扳机的裁判只有：规则引擎、侧信道、命中率、声纹、答案指纹、Slop 实锤、测试 FAIL。想看它们"在不在岗"，面板 checks 区和 `GET /satori/status` 都有每轮结果。
 
-### Q: Anthropic 官方 API 没有 logprobs，怎么核验 Claude 系？
+### Q: 检测会产生多少额外 API 费用？
 
-主力是**答案指纹**（`satori answers` 从官方端点采参考作答，纯黑盒）；辅以身份题组、规则引擎、延迟画像等行为通道；想上声纹也可以从可信第三方采"二手参考指纹"（`--source secondhand`，信任权重对折，sidecar 里记着出身）。
+周期 checker（声纹 1 次 + 答案指纹 8 次 + 身份探针 sample_size 次 + 金丝雀每题 1 次调用）× 每个 上游×模型 × 每 `check_interval_seconds` 一轮。默认 300 秒一轮，上游多模型多时留意账单。省钱选项：调大 `check_interval_seconds`、调小 `identity.sample_size`、关掉不需要的 checker。规则引擎和三条侧信道零额外请求。BASIC 档下身份通道连探针都不发——闭眼期间这部分费用也省了。
+
+### Q: 我要求模型角色扮演，会被误报吗？
+
+不会单独定罪。内置 `roleplay-excuse` 规则识别中英文假扮指令（pretend / act as / 扮演 / 假设你是……），请求侧命中给 -40 豁免，正好抵消一条厂商自报。注意豁免是"总量豁免"，目前不区分你要求假扮的厂商和模型实际自报的厂商是否一致。
+
+## 基线与三档
+
+### Q: 面板显示 BASIC 了，怎么办？
+
+先搞清楚是哪种 BASIC，`GET /satori/status` 的 `baselines` 段有答案：
+
+- `reference: null` 且没退役过——你还没采参考。`satori collect` / `satori answers` 采一份就好。
+- `retired_at` 有值——基线被退役了（你或别人确认过 official_update）。重新采集即恢复，退役标记自动失效。
+- `trust` 跌破 0.4——参考老了或来源降权。重新采集刷新。
+
+BASIC 不是故障，是觉大人明说"这只眼我闭着"——覚「見えないなら、見えないと言おう」。黑盒通道照常在岗，不会拿过期参考诬告人。
+
+### Q: TTL 过期了会不会自动退役基线？
+
+永远不会。TTL 只点灯：消耗 70% 黄、90% 橙、100% 红，提醒你"该重采了"。退役必须走 feedback 的地面真值：`satori feedback --upstream U --model M --reason official_update --confirm`，冷启动期 1 票、常态 3 票，或 operator 一票。理由写在代码注释里：自动退役 = 用预测杀人，误报形态会从"狼来了"变成"真狼来了却闭嘴"。
+
+### Q: 我重新采集了，为什么还显示退役/BASIC？
+
+两种可能：一是采到了别的上游名下（事件按 上游×模型 分账，名字要对上）；二是参考文件没落到配置的 `reference_dir`。正常情况下重采成功会打印"退役标记清除"，下一轮核验档次就按新可信度重算。另外网关是**每次核验从磁盘现读参考**的，不需要重启。
+
+### Q: 三套数字我总搞混：trust 三档、报警三级、TTL 灯——什么关系？
+
+- **trust 三档**（STRICT/STANDARD/BASIC）：基线的可信度，决定**盯多紧**。
+- **报警三级**（SAFETY/WATCH/DEGRADED）：账本的可疑度，决定**罚不罚**。
+- **TTL 灯**（黄/橙/红）：参考文件的保质期消耗，决定**该不该重采**。
+
+一个管证据强度，一个管判决，一个管证据保鲜。互不替代。
+
+## 测试裁决
+
+### Q: 我的测试 flaky，会不会误熔断我的上游？
+
+三层防护：滑窗要求最近 N×3 次里失败 ≥ N 次才触发（偶发失败不够）；历史失败率 >5% 且样本 ≥20 的测试自动标 unreliable，此后只记录不裁决；熔断权力只属于 TRUSTED 凭据。真被误熔了，operator 一条 `breaker/reset` 复位，然后好好修你的测试——flaky 测试当标尺，量谁都不准。
+
+### Q: TRUSTED / NORMAL / UNVERIFIED 到底差在哪？
+
+| | 报告进裁决 | PASS 衰减嫌疑 | FAIL 可熔断 |
+|---|---|---|---|
+| TRUSTED | 是（TRUSTED 桶） | 是（有地板） | 是，跨线优先 |
+| NORMAL | 是（独立桶） | 否 | 否，只加等级分 |
+| UNVERIFIED | 否，仅落盘 | 否 | 否 |
+
+桶隔离的意思是：NORMAL 的报告再多，也稀释不了 TRUSTED 的滑窗判定。签发时想清楚给谁什么级别，细节见 [SECURITY.md](SECURITY.md)。
+
+### Q: 测试套件怎么养才算"好标尺"？
+
+多写 L0：只有你付钱的那个档位能稳定答对的确定性断言（精确格式输出、边界计算、长指令遵循）。少写"能过就谢天谢地"的 L1。L3 开放式不计分，别指望它。套件的下限就是标尺的下限——拿玩具测试当真标尺，被骗的是你自己。
+
+## 凭据与控制面
+
+### Q: secret 忘了 / 引导 token 没抄下来，怎么办？
+
+secret 没有找回接口（list/get 永不返回），吊销重签：
+
+```bash
+curl -X DELETE http://127.0.0.1:8400/satori/admin/credentials/me \
+  -H "X-Satori-Admin-Secret: <admin_secret或引导token>"
+# 然后重新 POST 签发
+```
+
+引导 token 没抄到：重启 `satori serve` 会生成新的（旧的随之失效）。admin_secret 忘了：改 `SATORI_ADMIN_SECRET` 环境变量重启。
+
+### Q: 控制面一直 401 / 403？
+
+401 按顺序查：三枚签名头是否齐全 → 本机时钟是否飘了（时间窗 5 分钟）→ nonce 是否重复使用 → 凭据是否被吊销。403 是角色不够——复位要 operator，签发要 admin_secret。签名别手写，`from satori_gateway.security import sign_request`。
+
+### Q: 为什么要给本地面板也搞凭据？不麻烦吗？
+
+因为控制面端点改的是审计结论本身（详见 [SECURITY.md](SECURITY.md) 第 1 节）。回环 + 引导 token + 签一次 operator 是单人场景的最小闭环，五分钟的事。读面（status / live）是无鉴权的，面板看数据不需要凭据——只有按按钮才要。
+
+## 面板与部署
+
+### Q: 面板连不上 / 事件流一直空？
+
+九成是 WebSocket 没跑起来：确认装的是 `uvicorn[standard]`（`pip install -e .` 默认就是，standard extra 提供 websockets）。反代场景确认 WS 升级头被转发。面板里网关地址填错也会连不上——它默认 `http://127.0.0.1:8400`，存在浏览器 localStorage 里。
+
+### Q: 面板上的凭据安全吗？
+
+admin 口令和 operator secret 只活在页面 JS 变量里，不落 localStorage，刷新即消失。签发的 secret 以一次性横幅展示，点"我已保存，销毁横幅"即焚。面板只走 HMAC；Ed25519 凭据请用 CLI。
+
+### Q: 能把 Satori 部署到团队共享的机器上吗？
+
+能，但按规矩来：`admin_secret` 必须配（非回环不配拒启动）、`require_tls = true`、多团队上 Ed25519、读面拿反代加鉴权。代理面 `/v1/*` 不认识客户端——谁连上都能用你代持的 key，别把代理面裸奔到公网。
+
+## 实战
+
+### Q: 怀疑被掺水了，按什么顺序查？
+
+1. `GET /satori/status`：看 `suspicion` 段哪个 上游×模型 在涨分，hits 是 quality 还是 identity——身份类涨分基本坐实换模型，质量类涨分先看是不是降智。
+2. 面板/`logs/satori.log`：看具体命中了哪几条规则、JS 散度多少、答案相似度多少。
+3. 开了录制的话 `satori replay records/当天.jsonl` 重审，附 `--tool-traces` 看工具链。
+4. 主动验证：换官方 key 直连同一模型发同样的题，对比输出。
+5. 定性之后三选一：误报 → `satori feedback --reason false_alarm --confirm` 清账；官方更新 → `--reason official_update --confirm` 退役重采；实锤掺水 → 截图取证找上游对线，换家。
+
+### Q: 上游 90% 真 10% 假地掺，能抓到吗？
+
+这正是命中率通道的设计场景。掺水意味着每十笔交易就有一笔留下指纹：规则引擎逐条记分，累积速度远超半衰期衰减；严重规则命中率 EMA 持续超过 5% 就告警（`hit_rate_threshold` 可调）。掺得越少抓得越慢——低到 1% 量级时，任何系统都只能在更长窗口上说话了。
+
+### Q: 熔断器会误伤正常流量吗？
+
+拦截只针对越界的那一个 上游×模型，其他上游照常。越界本身要求多信号叠加，误伤概率低。怕打断工作流就把 `[breaker] enabled` 保持 false，只告警不拦截——但那样"味道变了"的流量会继续流进你的项目，自己权衡。
 
 ### Q: 录制功能安全吗？
 
-`[record] enabled = true` 会把对话文本落盘到 `records/`。**涉敏场景谨慎开启**，管好目录权限；该目录已在 `.gitignore` 排除，不会进仓库。回放取证（`satori replay`）是它的核心价值：规则升级后重审历史流量，秋后算账。工具链另落 `state/tool_traces.jsonl`（不含原始参数文本），`satori replay --tool-traces` 可逐步回放。
+`[record] enabled = true` 会把对话原文落盘到 `records/`，默认关。涉敏场景谨慎开启，管好目录权限（已在 .gitignore 排除）。工具链 trace 不含原始参数文本，只留结构化 flags。
 
-### Q: 我要求模型扮演别的角色，会被误报吗？
+### Q: Windows 下 curl 测中文请求报 400？
 
-不会。内置 `roleplay-excuse` 规则识别中英文假扮指令（pretend / act as / 扮演 / 假设你是……），命中给 -40 分豁免，正好抵消一条厂商自报。你也可以在 `rules.toml` 里写自己的豁免规则。
-
-### Q: 三级报警等级是什么？
-
-可疑度账本按分数分三级，跃迁实时广播到事件流和面板：
-
-| 等级 | 默认分数 | 含义 | 动作 |
-|---|---|---|---|
-| `SAFETY` | < 25 | 安全 | 无 |
-| `WATCH` | 25 ~ 49 | 可能降级，提高关注 | 事件提醒，面板橙色徽章 |
-| `DEGRADED` | ≥ 50 | 质量降级 | 告警 + 熔断（若开启） |
-
-注意账本带**半衰期衰减**（默认 1 小时，`decay_half_life_seconds` 可调）：孤立小错随时间归零，诚实上游偶发的口癖命中不会累积成冤案；只有持续异常才能积聚到 WATCH 以上。
-
-### Q: 告警阈值怎么调？
-
-`third_eye.toml` 的 `[rules]` 段：`suspicion_threshold`（DEGRADED/熔断线，默认 50）、`watch_threshold`（WATCH 线，默认 25）、`decay_half_life_seconds`（衰减半衰期，默认 3600）。内置规则分值设计：单条高危（伪装泄漏 50）直接越界；单条中危（厂商自报 40）需要第二条信号叠加——这是故意的，单信号不封神。
-
-### Q: 三档判别（STRICT/STANDARD/BASIC）是什么？
-
-基线可信度 `trust = W_source × W_pressure × 衰减^γ` 决定监控强度，**档次是油门不是仪表**：
-
-| 档次 | 条件 | 身份通道动作 |
-|---|---|---|
-| `STRICT` | trust ≥ 0.8 | 满额记账（指纹 20 / 答案 10） |
-| `STANDARD` | 0.4 ~ 0.8 | 半额记账——老参考/二手来源不配满贯信任 |
-| `BASIC` | 无参考 / 已退役 / 跌破 0.4 | 闭嘴——连探针都不发，只留黑盒通道在岗 |
-
-面板"基线判别"卡实时显示每个 上游×模型 的档次、信任分、TTL 消耗、来源和退役时间。
-
-### Q: 基线过期了会发生什么？要不要手动重采？
-
-不会世界末日。TTL（保质期）从你的真实事件里学（确认 `official_update` 的次数与间隔），消耗 70% 黄灯、90% 橙灯、100% 红灯——**但只点灯，永不自动退役**。要做的是二选一：
-
-- 确认官方真的更新了模型：`satori feedback --upstream U --model M --reason official_update --confirm`（reporter 攒 3 次或 operator 1 次；冷启动期 1 次）→ 旧参考归档进 `archive/baselines/`、降级 BASIC，然后重新 `collect`/`answers`
-- 只是误报/网络抖动：同样走 feedback，`--reason network_jitter`（或 `false_alarm`）只清账本，不动基线
-
-**为什么TTL不自动退役**：用预测杀人等于把误报从"狼来了"变成"真狼来了却闭嘴"——预测模型无权执行地面真值的动作。
-
-### Q: 上游掺水（90% 真 10% 假）能抓到吗？
-
-能，这正是命中率通道的设计场景。掺水意味着每十笔交易就有一笔留下指纹：规则引擎逐条记分（累积速度远超衰减），身份题组抓"两次回答自相矛盾"，**命中率通道**统计严重规则（≥25 分）的命中比例，持续超过 5% 就告警（`hit_rate_threshold` / `hit_rate_min_samples` 可调）。实测：10% 掺水告警稳定触发，诚实上游 1% 偶发命中保持沉默。
-
-### Q: 熔断器是什么？会误伤我的正常请求吗？
-
-`[breaker] enabled = true` 后，可疑度越界的 上游×模型 会被拉闸：后续请求一律 503 拦截，直到你人工确认并复位。定位是"味道变了实时停工"——宁可中断也不让低质量输出流进项目。拦截只针对越界的那个 上游×模型，其他上游不受影响；越界条件本来就要求多信号叠加，误伤概率很低。怕打断工作流就保持 `enabled = false`，只告警不拦截。**复位现在需要 operator 凭据**（见 SECURITY.md）——看门狗不能谁都能关。
-
-### Q: 控制面为什么要搞凭据？本地面板也要？
-
-因为控制面端点全是"能改变审计结论"的操作：伪造 test report 打 DEGRADED（拒绝服务）、刷 PASS 洗嫌疑（审计绕过）、`official_update` 确认让系统主动闭眼（最致命）。回环 + HMAC + 一次性引导 token 是单人场景的最小闭环；多团队跨网上 Ed25519 + `require_tls`。凭据签发/吊销/泄露应急见 [SECURITY.md](SECURITY.md)。
-
-### Q: 我的测试套件怎么接上来？
-
-三个入口一个语义：
-
-```bash
-# pytest 生态（执行阶段零阻塞，失败入本地队列补发）
-SATORI_URL=http://127.0.0.1:8400 SATORI_REPORTER=ci-bot SATORI_SECRET=... \
-  pytest -p satori_gateway.pytest_plugin
-# 非 pytest：JUnit XML / TAP / JSON
-satori-test-report results.xml --suite core --level L0
-# 自研：POST /satori/test/report，字段见 HANDBOOK 3.9
-```
-
-级别：`@satori_test(level="L0")` 确定性断言（N=3 触发、PASS 衰减 10）/ `L1` 语义（N=5、5）/ `L2` 复杂推理（N=7、2）/ `L3` 开放式不计分。**套件的下限就是标尺的下限**——多写"只有你付钱的档位能稳定答对"的 L0，少写"能过就谢天谢地"的 L1。
-
-### Q: 支持哪些客户端协议？
-
-三种入口：OpenAI Chat（`/v1/chat/completions`，透传）、Anthropic Messages（`/v1/messages`）、OpenAI Responses（`/v1/responses`）。**adapter v2 已双向翻译 tools / function calling**（含流式 input_json_delta 重组，工具链进 Slop 审计）；thinking block 仍未翻译（检测照常）。上游侧默认 OpenAI 兼容协议；也可设 `protocol = "anthropic"` 直连 Anthropic 原生 API（logprobs 声纹通道仅 openai 协议可用）。
-
-### Q: Windows 下 curl 测试中文请求报 400？
-
-Windows 控制台会把 `-d` 里的中文转成 GBK，JSON 直接坏掉。不是网关的锅。用文件发帖：
+控制台的锅：`-d` 里的中文被转成 GBK，JSON 直接坏掉。写文件发帖：
 
 ```bash
 printf '%s' '{"model":"gpt-4o","messages":[{"role":"user","content":"你好"}]}' > req.json
@@ -145,42 +166,20 @@ curl -X POST http://127.0.0.1:8400/v1/chat/completions \
 
 ## 扩展
 
-### Q: 怎么写自己的检测规则？
-
-编辑 `rules.toml`（项目根目录）：
-
-```toml
-[[rules]]
-name = "my-rule"
-field = "reasoning"   # content | reasoning | any
-match = "regex"       # contains | regex
-pattern = "你的模式"
-score = 20            # 可为负（豁免）
-description = "命中说明"
-```
-
-与内置规则同名即覆盖（调分数专用）。`target = "request"` 的规则看用户请求而不是模型输出。
-
-### Q: 怎么写自己的 checker / 协议适配器？
-
-都是装饰器 + 包扫描自动发现（类 Spring @ComponentScan）：
-
-- checker：在 `checkers/` 放模块，`@register_checker` + 实现 `from_config(cfg)` 工厂和 `check()`，返回 `None` 即配置禁用
-- adapter：在 `adapters/` 放模块，`@register_adapter` + 实现 `to_canonical` / `from_canonical` / `translate_sse`
-
-不需要动任何现有文件。
-
 ### Q: 参考指纹能分享吗？
 
-能，而且鼓励。`fingerprints/` 里的 JSON 就是纯文本分布数据，可以像杀毒软件特征库一样社区共享——谁也不求大厂。注意它含端点信息（文件名），分享前看一眼。分享/采集时建议带 `--source` 标注和 `--notes` 备注，让下游使用者知道该给多少信任权重。
+能，而且鼓励。`fingerprints/` 里的 JSON 是纯文本分布数据，可以像杀毒特征库一样社区共享——谁也不求大厂。文件名含端点信息，分享前看一眼。采集时带 `--source` 和 `--notes`，让下游知道该给多少信任权重。
+
+### Q: 怎么加自己的规则 / checker / 协议适配器？
+
+规则写在 `rules.toml`（同名覆盖内置，可以调分）。checker 放 `checkers/`、adapter 放 `adapters/`、上游协议放 `pipelines/`，都是装饰器 + 包扫描自动发现，不用改任何现有文件。模板见 [HANDBOOK.md](HANDBOOK.md) 第 10 节。
 
 ## 局限（丑话）
 
-- 单通道都可被针对性绕过，这个项目的意义在于叠加后的绕过成本
-- 身份自报可被角色扮演诱导——所以有豁免机制和阈值设计
-- 指纹会随量化/快照更新轻微漂移，参考建议定期重采
-- 测试锚点抓降级，声纹抓同级掉包——两条链互补，但**套件的下限就是标尺的下限**，别拿玩具测试当真标尺
-- Slop 的结构化评分不是语义判定：断链认得出，"参数选错但 JSON 合法"认不出（那是测试套件的活）
-- TTL 学习靠真实事件积累，冷启动固定 30 天；参数/时段相关的局部降级只有套件覆盖到那个模式才抓得到
-- HMAC 模式下服务端必须存 secret 原文（验证需要 key）——管好 `state/credentials.db`；多团队请上 Ed25519
-- 我们不证明"这是真模型"，只发现"这不是当初那个模型"——行为指纹是概率性的
+- 我们不证明"这是真模型"，只发现"这不是当初那个模型"。行为指纹是概率性的。
+- 单通道都可被针对性绕过，项目的意义在于叠加后的绕过成本。
+- 指纹会随官方快照/量化更新轻微漂移，参考要定期重采——TTL 就是干这个的。
+- 测试锚点抓降级，声纹抓同级掉包，两条链互补；套件的下限就是标尺的下限。
+- Slop 是结构化启发式：参数 JSON 断了认得出，"参数选错但 JSON 合法"认不出。
+- 参数相关、时段相关的局部降级，只有你的套件覆盖到那个模式才抓得到。
+- HMAC 模式服务端存 secret 原文——管好 `state/credentials.db`；跨网团队请上 Ed25519。

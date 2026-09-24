@@ -1,115 +1,90 @@
 # KomeijiSatori · 古明地覚
 
-> The Third Eye sees through everything — an AI gateway that reads your upstream's true colors
+> The third eye doesn't blink. An AI gateway that reads your upstream's mind.
 
-[中文文档](docs/zh/README.md) · [Q&A (中文)](docs/zh/QA.md)
+[中文文档](docs/zh/README.md) · [快速上手](docs/zh/QUICKSTART.md) · [运维手册](docs/zh/HANDBOOK.md) · [安全手册](docs/zh/SECURITY.md) · [Q&A 中文](docs/zh/QA.md)
 
-**Docs**: [Quickstart (EN)](docs/en/QUICKSTART.md) · [Handbook (EN)](docs/en/HANDBOOK.md) · [Security Handbook (EN)](docs/en/SECURITY.md) · [快速上手 (中文)](docs/zh/QUICKSTART.md) · [运维手册 (中文)](docs/zh/HANDBOOK.md) · [安全手册 (中文)](docs/zh/SECURITY.md)
+**English docs**: [Quickstart](docs/en/QUICKSTART.md) · [Handbook](docs/en/HANDBOOK.md) · [Security Handbook](docs/en/SECURITY.md) · [Q&A](docs/en/QA.md)
 
-The AI API relay market is a mess: "Claude" endpoints secretly serving small open-source models, silent routing to weaker models under load, the same model name quietly getting dumber over time. The vendor holds all the data; you get a single `model` field — and that field is worthless.
+## Should you use this?
 
-KomeijiSatori is a multi-protocol AI gateway (OpenAI Chat, Anthropic Messages, OpenAI Responses) that sits between your clients and your upstreams. **Clients plug in without noticing anything; Satori watches every drop of traffic behind the scenes.**
+If you buy API access from a reseller, a relay, or any middleman — yes, that's exactly who this is for. That market is a mess: "Claude" endpoints quietly serving small open models, traffic rerouted to weaker models at peak hours, the same model name getting dumber month over month. The vendor holds all the data. You get a `model` field in the response, and that field is worth nothing.
 
-## Design Manifesto
+KomeijiSatori sits between your clients and your upstreams as a multi-protocol gateway (OpenAI Chat, Anthropic Messages, OpenAI Responses). Clients point at it and notice nothing. Behind the proxy, every response is cross-examined: is this still the model it used to be, and is it still as good as it was?
 
-**Detect model routing and degradation without depending on vendor cooperation.**
+覚「嘘は口に、本音はトークンに」 — lies live in the words; the truth lives in the tokens.
 
-Every detection channel assumes a different level of cooperation, so losing any single field is degradation, not blindness — vendors can cut off fields, but they can't cut off behavior:
+## How it works
 
-| Channel | Cooperation needed | Catches |
+Traffic flows through protocol adapters into a canonical form, past the detection core, and out through an upstream pipeline. Detection is transparent to the client until the circuit breaker decides it shouldn't be.
+
+```
+client ──▶ [adapter] ──▶ canonical ──▶ [detection core] ──▶ [pipeline] ──▶ upstream
+/v1/chat/completions                   rules · side-channels · ledger      OpenAI-compatible
+/v1/messages                           checkers · slop · tests             or native Anthropic
+/v1/responses                          records · replay · event stream
+```
+
+No single channel is trusted, and no single channel is a silver bullet. Each one assumes a different level of vendor cooperation, so losing any one field (say, logprobs) is degradation, not blindness. Vendors can cut off fields; they can't cut off behavior.
+
+| Channel | Needs from vendor | What it catches |
 |---|---|---|
-| logprob voiceprint fingerprint | one optional field | model substitution (distributions can't be faked) |
-| Answer fingerprint (LLMmap-style) | none | substitution / degradation (pure black-box; primary channel for Claude-family endpoints) |
-| usage tokenizer side-channel | unforged `usage` | tokenizer swap (self-baselining, zero extra requests) |
-| Billing consistency audit | unforged `usage` | token padding / billing skimming (GatewayBench-style) |
-| Identity probe battery | none | vendor self-report contradictions / knowledge-cutoff drift |
-| Canary exams | none | degradation (capability pass-rate drift) |
-| Custom rule engine | none | mannerisms, disguise-prompt leaks, CoT language slips |
-| Latency profile drift | none | infrastructure signature drift (self-baselining) |
-| Record + replay forensics | none | audit yesterday's traffic with today's rules |
+| logprob voiceprint (`collect`) | one optional field | model substitution — distributions can't be faked |
+| answer fingerprint (`answers`) | nothing | substitution + degradation; pure black-box, primary weapon for Claude-family endpoints |
+| identity probe battery | nothing | self-report contradictions, knowledge-cutoff drift |
+| canary exams | nothing | capability pass-rate drift (degradation) |
+| rule engine (17 builtin + `rules.toml`) | nothing | mannerisms, disguise-prompt leaks, CoT language slips |
+| tokenizer / billing / latency side-channels | an unforged `usage` | tokenizer swap, token padding, infra signature drift — self-baselining, zero extra requests |
+| severe-rule hit-rate | nothing | the "90% real, 10% fake" dilution tactic |
+| slop chain forensics | nothing | tool calls with broken JSON args, hallucinated tools, repeats — how degraded models pollute downstream systems |
+| your own test suite | nothing | "can it still do the job" — the one thing a vendor can't forge |
 
-## Quick Start
+Everything lands in one suspicion ledger per upstream×model — actually two pockets: quality-class hits can be decayed by trusted test PASSes; identity-class hits (voiceprint, answer fingerprint) cannot be washed by any test result. The ledger decays with a half-life, so an honest upstream's occasional mannerism fades to zero while sustained watering keeps accumulating. Cross the line and the circuit breaker 503s that upstream×model until a human resets it.
+
+When rules improve, yesterday gets re-audited: record traffic to daily JSONL, then `satori replay` it with today's rules. And on a DEGRADED crossing, the log line ends with 覚「想起うさぎは警戒を」 — the remembrance rabbit has been warned. Some traditions are worth keeping.
+
+## The three tiers, and why
+
+References age. An answer fingerprint collected from the official endpoint today is a strong accusation; the same file six months later is a rumor. So each baseline carries a trust score — provenance × collection pressure × time decay — and the score sets the monitoring intensity:
+
+- **STRICT** (trust ≥ 0.8): fresh official reference. Identity channels at full weight — a mismatch is a serious charge.
+- **STANDARD** (0.4–0.8): aged or second-hand reference. Identity channels at half weight — don't spend full-trust accounting on an old rumor. The author's own stance: if the dish is good, I respect your supply chain — but I'm still counting the ingredients.
+- **BASIC** (no reference / retired / trust < 0.4): the third eye closes for identity — those channels aren't even probed. Black-box channels (rules, side-channels, canary, tests) stay on duty. It saves tokens and never accuses unjustly.
+
+Baselines expire only through human ground truth (`satori feedback … --confirm`), never through a timer. Predictions light lamps; they don't swing blades.
+
+## Quick start
 
 ```bash
-uv venv .venv
-uv pip install -e .
+uv venv .venv && uv pip install -e .
 
-# Edit third_eye.toml with your upstreams (supports env:VAR for keys)
-# Collect reference fingerprints from an official endpoint (required for the voiceprint channel)
-.venv/Scripts/satori collect --upstream openai --model gpt-4o
-# Collect reference answers for the black-box answer-fingerprint channel
+# collect references from an official endpoint
+.venv/Scripts/satori collect --upstream openai --model gpt-4o --source official
 .venv/Scripts/satori answers --upstream openai --model gpt-4o
 
-# Ignite
 .venv/Scripts/satori serve
 ```
 
-Then:
+Then point your client's base_url at `http://127.0.0.1:8400/v1` (any api_key — Satori holds the real one) and open `web/index.html` in a browser. The ten-minute version, with expected output at every step, is [QUICKSTART.md](docs/en/QUICKSTART.md).
 
-- Point your clients' base_url at `http://127.0.0.1:8400/v1` — traffic is watched automatically
-- Open `web/index.html` in a browser — the live dashboard (suspicion ledger / check results / event stream; the Third Eye blinks)
+## Honest limitations
 
-## CLI
+- Identity self-reports can be induced by role-play. That's why single hits never convict — signals must stack, and role-play earns an exemption.
+- Anthropic's official API exposes no logprobs. The voiceprint channel is dead there; answer fingerprinting is the primary channel, or collect a `--source secondhand` voiceprint from someone you trust.
+- A distilled model with a fully consistent persona beats the content channels. The voiceprint is the last line of defense — collect references before you need them.
+- Slop scoring is structural, not semantic: broken JSON is caught, "valid JSON, wrong parameter choice" is your test suite's job.
+- Satori never proves "this is the real model." It proves "this is no longer the model it used to be." Behavioral fingerprints are probabilistic; the defense is the stack, not the layer.
 
-```bash
-satori serve                                   # start the gateway
-satori collect --upstream U --model M [--prompt P] [--source official] [--wait-for-low]   # collect reference fingerprints
-satori answers --upstream U --model M [--source official]  # collect reference answers
-satori feedback --upstream U --model M --reason official_update --confirm   # false-positive feedback; retires an expired baseline at threshold
-satori replay records/2026-09-18.jsonl         # replay & audit recorded traffic
-satori ingest transcript.md --out records/x.jsonl    # convert markdown transcripts to record format
-satori-test-report results.xml                 # JUnit/TAP/JSON → test/report (non-pytest ecosystems)
-satori-test-mock --port 8401                   # local mock gateway for reporter development/CI
-```
+## Docs
 
-## How It Works (brief)
-
-- **Forwarding**: routes by `model` to the configured upstream; detection is fully transparent to the traffic
-- **Suspicion ledger**: every channel's hits flow into one ledger per upstream×model, with three alert levels `SAFETY` → `WATCH` (possible degradation, pay attention, default 25) → `DEGRADED` (quality degraded, default 50), transitions broadcast live; the ledger decays with a half-life (default 1h) — isolated small faults fade to zero while sustained adulteration still accumulates. A hit-rate channel specifically counters the "90% real, 10% fake" dilution tactic — role-play requests from users earn negative-score exemptions, no friendly fire. The ledger is split into **quality-class and identity-class** components (Wave 2): identity hits (voiceprint/answer fingerprint) sit in a separate account that no test result can launder
-- **Circuit breaker**: when enabled (`[breaker] enabled = true`), a tripped upstream×model gets 503'd on every subsequent request — when the flavor changes, work stops in real time so low-quality output never pollutes your project. Reset manually via `POST /satori/breaker/reset` (requires an `operator` credential under `[security]`)
-- **Business test anchor**: `POST /satori/test/report` scores your own test outcomes (levels L0–L2, sliding-window thresholds, flaky auto-marking, idempotent by trace). Trusted PASSes decay quality-class suspicion (floor-protected, quality-class only); consecutive FAILs from a trusted reporter jump straight to DEGRADED + breaker. Two-axis adjudication: nothing a test says can wash out identity-class suspicion — see `[testing]`
-- **Feedback & graceful degradation**: `POST /satori/baseline/feedback` retires a stale baseline after confirmed `official_update` reports (reporter ×3, or operator ×1; ×1 during cold start) — the gateway then degrades to `BASIC` mode (black-box channels only) instead of false-alarming. All audit state persists across restarts (`[state]`)
-- **Rule system**: 17 built-in rules (vendor self-reports, disguise leaks, mannerisms, exemptions); `rules.toml` holds your own, same-name rules override built-ins. Rules support `target: request` (inspect the user request, for exemptions) and `field: reasoning` (audit CoT specifically)
-- **Pluggable checkers**: `@register_checker` decorator + package-scan auto-discovery (Spring `@ComponentScan`-style) — drop a module into `checkers/` and it's on duty
-- **Live push**: `ws://…/satori/live` broadcasts check/request/suspicion/alert/breaker events; `GET /satori/status` for the current ledger
-- **Tool-call forensics (Slop)**: tool-call chains are captured per response (`change_trace`) and scored on structure — broken JSON arguments, undeclared tools, repeats, bloat. Structural suspicion is broadcast; two suspicious chains in one session confirm a `confirmed_slop` hit into the ledger (DEGRADED-weight, quality-class — washable by L0/L1 PASSes only down to the floor). Traces persist to `state/tool_traces.jsonl` for later replay
-- **Dynamic TTL**: baseline shelf-life is learned from real events (feedback-confirmed `official_update`s and successful collections) — median interval × safety factor, clamped to [7d, 180d]. Aging lights a dashboard warning at 70% / 90% / expiry, but **expiry never retires a baseline by itself** — retirement takes human ground truth (`satori feedback … --confirm`)
-- **Record & forensics**: `[record] enabled = true` writes traffic to daily JSONL; `satori replay` re-audits it offline — upgrade rules today, settle accounts with yesterday
-
-## Multi-Protocol Architecture
-
-```
-client ──▶ [protocol adapter] ──▶ canonical form (OpenAI Chat) ──▶ [detection core] ──▶ [pipeline] ──▶ upstream (OpenAI-compatible / native Anthropic)
-          /v1/messages                                    rules · side-channels · ledger
-          /v1/responses                                   records · replay · event stream
-          /v1/chat/completions (passthrough)
-```
-
-**Vendor-agnostic on the client side**: Anthropic Messages, OpenAI Responses, and OpenAI Chat entry protocols are translated into the canonical form by adapters in `adapters/`; the detection core knows nothing about protocols. New protocol = one module + `@register_adapter`, auto-discovered by package scan (same pattern as checkers).
-
-**Pluggable protocols on the upstream side**: the default `protocol = "openai"` covers OpenAI-compatible endpoints — our investigation targets (relay resellers, repackers) all speak this protocol to stay client-compatible, and speaking the same language is itself camouflage. Set `protocol = "anthropic"` to talk to the native Anthropic Messages API, translated by plugins in `pipelines/` (declarative `TransferPipeline`: decorator registration + package-scan discovery, same pattern as checkers). Note the logprobs voiceprint channel only works on openai-protocol upstreams — use answer fingerprinting (`[answerprint]`) for the rest.
-
-Adapter v2 scope: text & image content, system/instructions, streaming event translation, and **tools / function calling both ways** (client Anthropic Messages ↔ canonical ↔ native Anthropic upstream, including streaming `input_json_delta` reassembly). Thinking blocks are not yet translated (detection still works; thinking-dependent clients take note).
-
-## Configuration
-
-Every section of `third_eye.toml` is commented: `[gateway]` (listen/CORS/usage injection), `[[upstreams]]`, `[fingerprint]` (voiceprint), `[answerprint]` (answer fingerprint), `[identity]` (identity battery), `[canary]` (exams), `[rules]` (rules & alert threshold), `[breaker]` (circuit breaker), `[record]` (recording), `[security]` (control-plane credentials: HMAC + reporter/operator/admin roles), `[state]` (audit-state persistence), `[testing]` (business-test adjudication), `[logging]`.
-## Honest Limitations
-
-- Vendor self-report channels audit "testimony" and can be induced by role-play — that's why no single hit crosses the alert line; signals must stack
-- Anthropic's official API exposes no logprobs, so verifying Claude-family endpoints needs "second-hand references" or leans on behavioral channels (the answer fingerprint is now the primary weapon there)
-- When a distilled model's persona is fully consistent, content channels miss it; the logprob channel is the last line of defense — collect reference fingerprints before going live
-- No single channel is a silver bullet; the entire point of this project is defense in depth
-
-## FAQ & Troubleshooting
-
-See [docs/QA.md](docs/zh/QA.md) (Chinese) for principles, costs, false positives, extension guides, and limitations.
-
-Windows users: pasting Chinese into `curl -d` in the console gets mangled to GBK and returns 400 — write the JSON to a file and use `--data-binary @req.json`.
+- [QUICKSTART.md](docs/en/QUICKSTART.md) — running in ten minutes, control plane included
+- [HANDBOOK.md](docs/en/HANDBOOK.md) — mechanism reference: channels, ledger, baseline lifecycle, state files, extension points
+- [SECURITY.md](docs/en/SECURITY.md) — control-plane trust model, credentials, signatures, TLS
+- [QA.md](docs/en/QA.md) — real questions, including the ugly truths
 
 ## Naming
 
-Komeiji Satori, from *Touhou Chireiden* (Subterranean Animism) — a satori youkai famed for mind-reading, seeing through every facade straight to the heart. Whatever the vendor serves up, one glance from Satori tells the truth.
+Komeiji Satori, from *Touhou Chireiden* (Subterranean Animism) — a satori youkai famed for mind-reading, seeing through every facade straight to the heart. Whatever the vendor serves up, one glance tells the truth.
 
 ## License
 

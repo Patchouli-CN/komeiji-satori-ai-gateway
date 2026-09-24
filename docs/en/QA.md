@@ -1,143 +1,105 @@
-# Q&A · Common questions
+# Q&A · Real questions
 
-> The Chinese original ([../zh/QA.md](../zh/QA.md)) is the living document; this English edition covers the same ground for non-Chinese readers.
+> Questions people actually ask, in roughly the order they ask them. Principles and mechanism details live in [HANDBOOK.md](HANDBOOK.md); credential operations in [SECURITY.md](SECURITY.md). [中文版](../zh/QA.md)
 
-## Positioning & principles
+## Detection
 
-### Q: What is Satori?
+### Q: Why does the fingerprint channel skip on my Anthropic upstream?
 
-A multi-protocol gateway (OpenAI Chat / Anthropic Messages / OpenAI Responses) sitting between you and your AI upstreams. Clients plug in without noticing; it audits every drop of traffic in the background: model substitution, silent routing, quiet degradation — all recorded into a suspicion ledger with live alerts; on threshold it can trip the circuit breaker and stop low-quality output dead.
+Because Anthropic's API has never exposed logprobs, and the voiceprint is a logprob distribution. No distribution, nothing to compare — the channel isn't broken, it's absent by design. `satori collect` will tell you the same thing and suggest the alternative: `satori answers`, the answer fingerprint, which is pure black-box (eight fixed questions at temp=0, similarity against your reference) and the primary weapon for Claude-family endpoints. The identity battery, rules, canary and latency profile all work too. If you specifically want a voiceprint for a Claude relay, collect one from an endpoint you trust and mark it `--source secondhand` — half trust weight, provenance recorded.
 
-### Q: Why is it named Komeiji Satori?
+### Q: I'm in BASIC mode. What should I actually do?
 
-A satori youkai from *Touhou Chireiden* famed for mind-reading — seeing through every facade straight to the heart. Whatever the vendor serves up, one glance (at the token distribution) tells the truth.
+First, don't panic — BASIC means the identity channels are deliberately silent, not that something failed. The startup log tells you which kind of BASIC it is: "No baseline collected" (you never collected references for that model — go run `collect`/`answers` from an endpoint you trust) or "Baseline expired … retired" (a human confirmed an official update; re-collect from the official endpoint to re-arm). While in BASIC, the black-box channels — rules, side-channels, hit-rate, canary, slop, tests — are all still on duty, and you stop paying for identity probes. It's a legitimate steady state for an upstream you only half-care about, but understand what you're flying without: equal-tier swaps become much harder to catch.
 
-### Q: How does it detect model substitution?
+### Q: The TTL expired. Does the baseline auto-retire?
 
-Defense in depth — no single silver bullet:
+No, and that's a load-bearing decision. TTL consumption lights lamps — yellow at 70%, orange at 90%, red at 100% — and the red lamp suggests re-collecting or confirming an update. Nothing else happens. Retirement requires human ground truth through the feedback channel (`satori feedback --reason official_update --confirm`, or operator single-vote). The reasoning: a prediction model that can kill baselines turns the failure mode from "cried wolf" into "the real wolf arrived and we stayed silent". Lamps are cheap; silence is not.
 
-- **logprob voiceprint**: the token distribution is a physical property of the model — distillation steals persona but not distributions
-- **Answer fingerprint**: fixed battery at temp=0, answers compared to reference via similarity (LLMmap-style); pure black-box — the primary channel for Claude-family endpoints (no logprobs)
-- **usage tokenizer side-channel**: token counts for the same text expose the tokenizer — a swap drifts the ratio (self-baselining, zero extra requests)
-- **Billing consistency**: completion_tokens vs received text ratio drift catches token inflation / billing skim
-- **Identity battery**: multi-phrasing cross-checks; vendor self-report contradictions and knowledge-cutoff drift are the tells
-- **Canary exams**: questions with known answers; degradation shows in pass rate immediately
-- **Business test anchor**: your own test suite's outcomes — degradation implies a capability drop; consecutive suite failures are hard evidence, and the vendor cannot forge "can it do the job right"
-- **Rule engine**: mannerisms, disguise-prompt leaks, CoT language slips — 17 built-in plus your own
-- **Latency profile**: first-byte latency as infrastructure signature, self-baselined drift detection
-- **Hit-rate channel**: serious-rule hit rate above threshold — built for the "90% real, 10% fake" dilution tactic
-- **Slop chain forensics**: broken argument JSON / undeclared tools / repeats — the typical shape of degraded models polluting downstream systems
+### Q: Can flaky tests trip the breaker?
 
-All hits land in one two-pocket ledger (quality-class + identity-class), escalating across `SAFETY → WATCH → DEGRADED`.
+Structurally, no. Three layers stand between your flaky suite and the breaker: the sliding window needs ≥N fails within the last 3N runs before anything injects; a test whose lifetime failure rate exceeds 5% (with ≥20 samples) gets marked `unreliable` and is recorded but never adjudicated again; and only TRUSTED credentials can trip the breaker at all — NORMAL reports just add their level score and let the general threshold decide. If a genuinely flaky test still somehow fires, the breaker reset is one signed POST away. But if your L0 "deterministic" test is flaky, the test is the bug.
 
-### Q: Can a vendor fool Satori in return?
+### Q: I suspect watering. In what order do I investigate?
 
-They can cut individual fields (e.g., stop returning logprobs), but **they can't cut behavior** — as long as the model still produces text, that output is evidence. A sharper move is swapping in an "equal-tier model that passes your test suite": the quality dimension waves it through, but the **identity pocket** (voiceprint / answer fingerprint) keeps that account — and no test PASS can wash it. Each layer assumes a different level of cooperation, and cutting everything costs more than it pays. That is the "without depending entirely on the vendor" design philosophy.
+1. **Look at the ledger first**: `GET /satori/status` — which pocket grew (quality or identity), and which rules fed it. Identity-pocket growth is the serious one; no test result can wash it.
+2. **Read the hits** in `logs/satori.log` — each suspicion line names the rules and snippets.
+3. **Replay the evidence**: `satori replay records/<date>.jsonl --tool-traces state/tool_traces.jsonl` re-audits recorded traffic with current rules and walks tool chains step by step.
+4. **Check the baselines card**: tier, trust, TTL consumption. An aged STANDARD baseline crying mismatch is a weaker accusation than a fresh STRICT one.
+5. **Decide the ground truth yourself**: send your own probe, compare against the vendor's official endpoint.
+6. **Then act** — false alarm: `--reason false_alarm --confirm` clears the ledger. Real official update: `--reason official_update --confirm` retires the baseline gracefully. Real fraud: take the recordings to the refund dispute and switch upstreams.
 
-### Q: What about a distilled model that genuinely believes it's Claude?
+Don't skip to step 6. The ledger accuses; only you convict.
 
-Content channels miss it (it isn't "lying" — it's "amnesiac"), but the logprob voiceprint catches it — the mouth can impersonate, the token distribution can't; endpoints without logprobs fall back to the **answer fingerprint**: answering habits are equally unstealable. So **collect references with an official key before going live** (`satori collect` for voiceprint, `satori answers` for answers), or both channels idle.
+### Q: The dashboard loads but the event stream is dead.
 
-### Q: What's the two-axis model? Why can't test PASSes wash identity suspicion?
+Nine times out of ten: `uvicorn` was installed without the `standard` extra, and the `websockets` dependency that `/satori/live` needs is missing. `uv pip install "uvicorn[standard]"` fixes it (it's declared in the project dependencies, so this mainly bites hand-rolled installs). The other suspect is a reverse proxy that doesn't upgrade WebSocket connections — configure it to, or check that the gateway address field in the dashboard matches where you actually bound the server.
 
-Adjudication stands on two orthogonal axes — miss one and you're routed around:
+### Q: Can a vendor fool Satori?
 
-| Axis | Governs | Implementation |
-|---|---|---|
-| Trust | whose PASS/FAIL carries weight | TrustLevel: TRUSTED (PASS may decay, FAIL may trip breaker) / NORMAL (recorded only) / UNVERIFIED (recorded only) |
-| Signal | what a PASS can wash | PASSes only decay **quality-class** hits (rules/billing/latency/Slop/test) and never below the negative floor; **identity-class** hits (voiceprint JS / answer fingerprint) can't be washed by any test result |
-
-Translation: even with a TRUSTED credential spamming test PASSes, the "is this still the original model" account loses nothing. Unfreezing identity suspicion takes exactly two roads — re-collect references, or an explicit operator ruling (`POST /satori/baseline/identity-cleared`).
-
-## Usage
+They can cut individual fields — stop returning logprobs, for instance — but they can't cut behavior. As long as the model still produces text, that text is evidence. The sharper move is swapping in an equal-tier model that passes your test suite: the quality dimension waves it through, but the identity pocket (voiceprint / answer fingerprint) keeps its own account, and no PASS can wash it. Evading every channel at once costs more than the fraud pays. That's the entire design philosophy: not one perfect sensor, but a stack whose combined evasion cost exceeds the profit.
 
 ### Q: Does it cost extra API calls?
 
-Yes. Voiceprint, answer fingerprint, identity battery and canary are real API calls on `check_interval_seconds`. Watch the bill with many upstreams × models; widen the interval, shrink `identity.sample_size`, or disable checkers per config. Rules, the three side-channels and the hit-rate channel cost zero extra requests — they ride on live traffic. Under the `BASIC` tier identity channels aren't even probed — while the eye is closed, that spend stops too.
+Yes. Voiceprint, answer fingerprint, identity battery and canary are real calls every `check_interval_seconds` (default 300). With many upstreams × models, watch the bill: widen the interval, shrink `identity.sample_size`, or disable checkers. Rules, the three side-channels, hit-rate and slop ride on live traffic and cost nothing extra. In BASIC mode the identity channels aren't even probed — while the eye is closed, that spend stops too.
 
-### Q: Anthropic's official API has no logprobs — how do I verify Claude endpoints?
+### Q: Will role-play cause false alarms?
 
-Primary: **answer fingerprint** (`satori answers` collects references from the official endpoint, pure black-box); supported by the identity battery, rules and latency profile; for voiceprint you can also collect a "second-hand reference" from a trusted third party (`--source secondhand`, half trust weight, provenance recorded in the sidecar).
+No — this is handled, not hoped away. The builtin `roleplay-excuse` rule recognizes impersonation directives ("pretend you are", "act as", 扮演, 假设你是……) on the request side and grants a −40 exemption, exactly cancelling one vendor self-report. Write your own exemptions in `rules.toml` with `target = "request"`.
+
+## Operations
+
+### Q: I lost a credential / my admin secret. Now what?
+
+Credential plaintext: no recovery by design — revoke (`DELETE /satori/admin/credentials/{id}`) and re-issue. Admin secret: stop, rotate `env:SATORI_ADMIN_SECRET`, restart; existing credentials are unaffected. Bootstrap token: restart the gateway, it dies with the process. And if you lost `state/credentials.db` entirely, every credential is gone — revoke-by-rebuild: re-issue everything from your admin secret. This is why the file is 0600 and why you back it up somewhere that isn't git.
+
+### Q: What are the three alert levels, and how do I tune them?
+
+SAFETY (<25) → WATCH (25–49, "possible degradation, pay attention") → DEGRADED (≥50, alert + breaker if enabled). All three knobs live in `[rules]`: `watch_threshold`, `suspicion_threshold`, `decay_half_life_seconds` (default 3600). The ledger decays with a half-life: each new hit first decays the old score, then adds — an honest upstream's occasional mannerism fades to zero, sustained watering outpaces decay and climbs. Builtin weights are tuned so one high-risk hit (disguise leak, 50) crosses immediately while a medium one (self-report, 40) needs a second stacked signal. Single signals never convict.
+
+### Q: What are STRICT / STANDARD / BASIC again?
+
+Baseline trust (provenance × collection pressure × time decay, γ=1.5) sets monitoring intensity — a throttle, not a gauge:
+
+| Tier | Condition | Identity channels |
+|---|---|---|
+| STRICT | trust ≥ 0.8 | full weight (fingerprint 20 / answerprint 10) — a mismatch is a serious charge |
+| STANDARD | 0.4–0.8 | half weight — no full-trust accounting on an old reference |
+| BASIC | no reference / retired / < 0.4 | silent, not even probed — black-box channels only |
+
+The author's own stance sits at STANDARD: if the dish is good I respect your supply chain — but I'm still counting the ingredients.
+
+### Q: What is the circuit breaker, and will it hurt normal requests?
+
+With `[breaker] enabled = true` (the shipped config), a DEGRADED crossing 503s that upstream×model until a human with an operator credential resets it. The positioning is "when the flavor changes, work stops in real time" — better an interruption than low-quality output flowing into your project. Blocking is scoped to the offending upstream×model; everything else flows. Crossing requires stacked signals, so friendly fire is unlikely — but if it happens, `POST /satori/breaker/reset` (signed) clears the breaker and both ledger pockets. Keep `enabled = false` if you want alert-only.
+
+### Q: Why does the control plane need credentials at all? It's localhost.
+
+Because every control endpoint is "an operation that changes an audit conclusion": forged FAILs fake DEGRADED (denial of service), PASS spam washes suspicion (audit bypass), a forged `official_update` makes the system close its own eyes. Localhost is not a trust boundary — it's where your CI, your browser, and every other process live. Loopback + HMAC + bootstrap token is the minimal loop for solo use; multi-team goes Ed25519 + `require_tls`. The read side (status, event stream, dashboard) is deliberately open — that trade-off is spelled out in [SECURITY.md](SECURITY.md) §8.
+
+### Q: How do I wire up my test suite?
+
+```bash
+# pytest
+SATORI_URL=http://127.0.0.1:8400 SATORI_REPORTER=ci-bot SATORI_SECRET=… \
+  pytest -p satori_gateway.pytest_plugin
+# JUnit XML / TAP / JSON (non-pytest ecosystems)
+satori-test-report results.xml --suite core --level L0
+```
+
+Levels: `@satori_test(level="L0")` deterministic (N=3, PASS decay 10) / `L1` semantic (5, 5) / `L2` complex reasoning (7, 2) / `L3` open-ended, unscored. Reporting never blocks tests and never turns CI red — failures queue locally and flush next run. One honest warning: **your suite's floor is the ruler's floor**. Write L0 assertions that only the tier you paid for can stably pass; a suite of "at least it parsed" tests measures nothing.
+
+### Q: Which protocols does it speak?
+
+Client side: OpenAI Chat (`/v1/chat/completions`, passthrough), Anthropic Messages (`/v1/messages`), OpenAI Responses (`/v1/responses`) — adapters translate everything into a canonical form the detection core understands, tools/function calling included, both ways. Thinking blocks aren't translated (detection unaffected). Upstream side: OpenAI-compatible by default; `protocol = "anthropic"` talks to the native Anthropic API via `pipelines/`. Voiceprint works only on openai-protocol upstreams.
 
 ### Q: Is recording safe?
 
-`[record] enabled = true` writes conversation text to `records/`. **Be careful in sensitive settings**, guard directory permissions; the directory is .gitignored and never enters the repo. Replay forensics (`satori replay`) is its core value: re-audit history after rule upgrades, settle accounts later. Tool chains land separately in `state/tool_traces.jsonl` (no raw argument text); `satori replay --tool-traces` walks them step by step.
-
-### Q: Will role-play induce false alarms?
-
-No. The built-in `roleplay-excuse` rule recognizes Chinese/English impersonation directives (pretend / act as / 扮演 / 假设你是……) and grants a −40 exemption, exactly cancelling one vendor self-report. You can write your own exemptions in `rules.toml`.
-
-### Q: What are the three alert levels?
-
-The ledger divides scores into three levels; transitions broadcast live to the event stream and dashboard:
-
-| Level | Default score | Meaning | Action |
-|---|---|---|---|
-| `SAFETY` | < 25 | safe | none |
-| `WATCH` | 25 ~ 49 | possible degradation, pay attention | event alert, orange dashboard badge |
-| `DEGRADED` | ≥ 50 | quality degraded | alert + breaker (if enabled) |
-
-The ledger has **half-life decay** (default 1 hour, `decay_half_life_seconds` tunable): isolated small faults fade to zero — an honest upstream's occasional mannerism never accumulates into a wrongful conviction; only sustained anomalies climb past WATCH.
-
-### Q: How do I tune alert thresholds?
-
-`[rules]` in `third_eye.toml`: `suspicion_threshold` (DEGRADED/breaker line, default 50), `watch_threshold` (WATCH line, default 25), `decay_half_life_seconds` (half-life, default 3600). Built-in rule weights are designed so a single high-risk hit (disguise leak, 50) crosses immediately while a single medium hit (vendor self-report, 40) needs a second stacked signal — single signals never convict.
-
-### Q: What are the three baseline tiers (STRICT/STANDARD/BASIC)?
-
-Baseline trust `trust = W_source × W_pressure × decay^γ` sets the monitoring intensity — **tier is a throttle, not a gauge**:
-
-| Tier | Condition | Identity-channel action |
-|---|---|---|
-| `STRICT` | trust ≥ 0.8 | full scoring (fingerprint 20 / answer 10) |
-| `STANDARD` | 0.4 ~ 0.8 | half scoring — aged/low-trust sources get no full-trust accounting |
-| `BASIC` | no reference / retired / below 0.4 | silenced — not even probed; black-box channels only |
-
-The dashboard's "Baseline tiers" card shows each upstream×model's tier, trust, TTL consumption, source and retirement time live.
-
-### Q: What happens when a baseline expires? Do I re-collect manually?
-
-No world-ending event. TTL (shelf life) is learned from your real events (confirmed `official_update`s and intervals); consumption lights yellow at 70%, orange at 90%, red at 100% — **but only lamps, never auto-retirement**. Do one of two things:
-
-- Confirm the vendor really updated the model: `satori feedback --upstream U --model M --reason official_update --confirm` (reporter ×3 or operator ×1; ×1 during cold start) → the old reference archives into `archive/baselines/`, the tier degrades to BASIC, then re-`collect`/`answers`
-- Just a false positive / network jitter: same command with `--reason network_jitter` (or `false_alarm`) clears the ledger only, leaving the baseline intact
-
-**Why doesn't TTL auto-retire**: killing by prediction turns the failure mode from "crying wolf" into "the real wolf arrives and we stay silent" — predictive models have no authority over ground-truth actions.
-
-### Q: Can dilution (90% real, 10% fake) be caught?
-
-Yes — that's the hit-rate channel's design scenario. Dilution means one in ten trades leaves fingerprints: the rule engine scores each response (accumulation outpaces decay), the identity battery catches "two answers contradicting each other", and the **hit-rate channel** tracks the serious-rule (≥25 pts) hit ratio, alerting above a sustained 5% (`hit_rate_threshold` / `hit_rate_min_samples` tunable). Measured: 10% dilution alerts reliably, honest 1% noise stays silent.
-
-### Q: What is the circuit breaker? Will it hurt my normal requests?
-
-With `[breaker] enabled = true`, any upstream×model crossing the threshold trips: subsequent requests 503 until you confirm and reset. The positioning is "when the flavor changes, work stops in real time" — better to interrupt than let low-quality output flow into the project. Blocking targets only the offending upstream×model; other upstreams are unaffected; crossing requires multiple stacked signals, so friendly fire is unlikely. Keep `enabled = false` for alert-only. **Reset now requires an operator credential** (see SECURITY.md) — the watchdog can't be switched off by anyone.
-
-### Q: Why credentials for the control plane? Even a local dashboard?
-
-Because every control-plane endpoint is "an operation that can change audit conclusions": forged test reports to fake DEGRADED (denial of service), PASS spam to wash suspicion (audit bypass), `official_update` confirmations to make the system close its own eyes (the most lethal). Loopback + HMAC + a one-time bootstrap token is the minimal loop for solo use; multi-team cross-network goes Ed25519 + `require_tls`. Issuance/revocation/leak response: [SECURITY.md](SECURITY.md).
-
-### Q: How do I wire up my own test suite?
-
-Three entries, one semantics:
-
-```bash
-# pytest ecosystem (zero blocking during execution; failures queue locally for retry)
-SATORI_URL=http://127.0.0.1:8400 SATORI_REPORTER=ci-bot SATORI_SECRET=... \
-  pytest -p satori_gateway.pytest_plugin
-# non-pytest: JUnit XML / TAP / JSON
-satori-test-report results.xml --suite core --level L0
-# custom: POST /satori/test/report — fields in HANDBOOK 3.9
-```
-
-Levels: `@satori_test(level="L0")` deterministic (N=3, PASS decay 10) / `L1` semantic (N=5, 5) / `L2` complex reasoning (N=7, 2) / `L3` open-ended, unscored. **Your suite's floor is the ruler's floor** — write more L0 assertions that only the tier you paid for can stably pass, fewer "at least it parsed" L1s.
-
-### Q: Which client protocols are supported?
-
-Three entries: OpenAI Chat (`/v1/chat/completions`, passthrough), Anthropic Messages (`/v1/messages`), OpenAI Responses (`/v1/responses`). **Adapter v2 translates tools / function calling both ways** (including streaming `input_json_delta` reassembly; tool chains feed Slop forensics); thinking blocks remain untranslated (detection unaffected). Upstream side defaults to OpenAI-compatible protocol; set `protocol = "anthropic"` for the native Anthropic API (voiceprint channel is openai-protocol only).
+`[record] enabled = true` writes raw conversation text to `records/` in daily JSONL. It's .gitignored, but guard the directory permissions in sensitive settings — this is the one place Satori keeps your actual conversations. The payoff is replay forensics: upgrade rules today, re-audit yesterday. Tool chains land separately in `state/tool_traces.jsonl` without raw argument text.
 
 ### Q: Why does curl with Chinese fail with 400 on Windows?
 
-The Windows console transcodes `-d` content to GBK and the JSON breaks. Not the gateway's fault. Use a file:
+The Windows console transcodes `-d` content to GBK and the JSON breaks. Not the gateway's fault. Write the body to a file:
 
 ```bash
 printf '%s' '{"model":"gpt-4o","messages":[{"role":"user","content":"你好"}]}' > req.json
@@ -147,42 +109,19 @@ curl -X POST http://127.0.0.1:8400/v1/chat/completions \
 
 ## Extension
 
-### Q: How do I write my own rules?
+### Q: Can I write my own rules / checkers / protocol adapters?
 
-Edit `rules.toml` (project root):
-
-```toml
-[[rules]]
-name = "my-rule"
-field = "reasoning"   # content | reasoning | any
-match = "regex"       # contains | regex
-pattern = "your pattern"
-score = 20            # may be negative (exemption)
-description = "hit description"
-```
-
-Same name as a built-in overrides it (retuning). `target = "request"` rules inspect the user request, not model output.
-
-### Q: How do I write my own checker / protocol adapter?
-
-Both are decorator + package-scan auto-discovery (Spring `@ComponentScan` style):
-
-- checker: drop a module into `checkers/`, `@register_checker` + implement the `from_config(cfg)` factory and `check()`; returning `None` means config-disabled
-- adapter: drop a module into `adapters/`, `@register_adapter` + implement `to_canonical` / `from_canonical` / `translate_sse`
-
-No existing file needs editing.
+Rules: edit `rules.toml` — `name / field (content|reasoning|any) / target (response|request) / match (contains|regex) / pattern / score (negative allowed) / description`; same name as a builtin overrides it. Validate against samples with `satori replay` before production, and prefer several weak signals over one strong one. Checkers and adapters: drop a module into `checkers/` or `adapters/` with the register decorator — package-scan auto-discovery, no existing file needs editing. Details: [HANDBOOK.md](HANDBOOK.md) §9.
 
 ### Q: Can reference fingerprints be shared?
 
-Yes, and it's encouraged. The JSON in `fingerprints/` is plain distribution data — share it like an antivirus signature database; nobody begs the vendor. Note it contains endpoint info (in filenames), so look before sharing. When collecting/sharing, mark `--source` and `--notes` so downstream users know how much trust weight to give it.
+Yes, and it's encouraged — the JSON in `fingerprints/` is plain distribution data, shareable like an antivirus signature database; nobody begs the vendor. It does contain endpoint info (in filenames and sidecars), so look before sharing. Mark `--source` and `--notes` when collecting so downstream users know how much trust weight to give it.
 
-## Limitations (the ugly truths)
+## The ugly truths
 
-- Every single channel can be circumvented by targeted means; the point of this project is the stacked cost of circumventing all of them
-- Identity self-reports can be induced by role-play — hence exemptions and threshold design
-- Fingerprints drift slightly with quantization/snapshots — re-collect periodically
-- The test anchor catches degradation, the voiceprint catches equal-tier swaps — complementary chains, but **your suite's floor is the ruler's floor**; don't mistake toy tests for a real ruler
-- Slop's structural scoring is not semantic: broken JSON is caught, "valid JSON, wrong parameter choice" is the test suite's job
-- TTL learning needs real event accumulation — cold start is fixed 30 days; parameter/time-local degradation is only caught where your suite covers that pattern
-- HMAC mode forces the server to store the secret verbatim (verification needs the key) — guard `state/credentials.db`; multi-team deployments should go Ed25519
-- We don't prove "this is the real model", we discover "this isn't the model it used to be" — behavioral fingerprints are probabilistic
+- Every single channel can be circumvented by a targeted effort; the point is the stacked cost of circumventing all of them.
+- A distilled model with a fully consistent persona beats the content channels. Voiceprint or answerprint is the last line — collect references before you need them.
+- Slop scoring is structural: broken JSON is caught, "valid JSON, wrong parameter choice" is your suite's job.
+- TTL learning needs real event history; cold start is a fixed 30 days. Parameter-level or time-local degradation is only caught where your suite covers that pattern.
+- HMAC mode forces the server to store secrets verbatim — guard `state/credentials.db`; multi-team deployments should use Ed25519.
+- Satori never proves "this is the real model". It proves "this is no longer the model it used to be". Behavioral fingerprints are probabilistic, and the defense is the stack, not the layer.

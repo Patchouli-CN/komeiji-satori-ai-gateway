@@ -1,4 +1,4 @@
-"""控制面封印授权——Gate 0 / Phase 6A+6B（v4 交付顺序）。
+"""控制面封印授权（v4 Phase 6：6A+6B Gate 0 / 6F TLS / 6G Ed25519）。
 
 信任链的第一轴：**谁的 PASS/FAIL 有分量、谁有资格动审计结论**。
     - TrustLevel：只作用于 test/report 打分权重（TRUSTED 可衰减/可熔断）
@@ -7,10 +7,9 @@
 两轴必须分开：信任分级解决"信不过的 reporter 不许说话"，
 维度隔离（Phase 5A）解决"信得过的 reporter 也不许就质量维度给身份维度作证"。
 
-Gate 0 范围（先于 Phase 1 与 Phase 5A 落地）：
-    HMAC 模式 + SQLite 凭据存储 + Admin 签发/吊销 + 端点授权矩阵接线。
-Ed25519 非对称签名与 TLS 强制留给后续波次——接口按可扩展设计，
-ControlAuth.verify 的返回类型不暴露底层认证方式。
+已落地范围：HMAC 模式 + SQLite 凭据存储 + Admin 签发/吊销 + 端点授权矩阵
+（Gate 0 / 6A+6B），其后 6F TLS 前置与 6G Ed25519 非对称签名按预留接口
+扩展进来——ControlAuth.verify 的返回类型不暴露底层认证方式。
 
 HMAC 模式的存储代价必须说清：HMAC 验证需要 key 原文，故 SQLite 里
 存的是 secret 本身（0600 + 不进 list/get 响应）。Ed25519 模式只存公钥，
@@ -21,8 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
-import logging
 import os
 import secrets
 import sqlite3
@@ -33,9 +32,23 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+    load_pem_private_key,
+    load_pem_public_key,
+)
 from fastapi import HTTPException, Request
 
-log = logging.getLogger("satori")
+from .logger import LoggerManager
+
+log = LoggerManager.get_logger("SECURITY")
 
 # 控制面请求头约定（签名覆盖原始请求字节，防 canonical 化差异埋雷）
 H_REPORTER = "X-Satori-Reporter"
@@ -62,6 +75,7 @@ CREATE TABLE IF NOT EXISTS credentials (
 
 # ---- 6A 凭据模型 ----
 
+
 class TrustLevel(str, Enum):
     """report 通道的打分权重（不控制操作权限）。"""
 
@@ -83,9 +97,9 @@ class TrustLevel(str, Enum):
 class Role(str, Enum):
     """控制面操作权限（与 trust_level 正交）。"""
 
-    REPORTER = "reporter"    # 提交 report / feedback 建议
-    OPERATOR = "operator"    # feedback 确认/退役、breaker reset、ttl override
-    ADMIN = "admin"          # 凭据签发/吊销/查看
+    REPORTER = "reporter"  # 提交 report / feedback 建议
+    OPERATOR = "operator"  # feedback 确认/退役、breaker reset、ttl override
+    ADMIN = "admin"  # 凭据签发/吊销/查看
 
 
 # 角色是等级，不是平行标签：operator 天然是 reporter，admin 天然是一切。
@@ -151,6 +165,7 @@ def _parse_trust_level(raw: str) -> TrustLevel:
 
 # ---- 6B 凭据存储 ----
 
+
 class CredentialStore:
     """SQLite 凭据库：签发、吊销、查询、touch。服务端只此一份真相。"""
 
@@ -167,8 +182,12 @@ class CredentialStore:
         try:
             os.chmod(db, 0o600)
         except OSError as exc:
-            log.warning("[security] 凭据库 %s 设置 0600 权限失败（%r）——"
-                        "请手动管好这个文件的权限", db, exc)
+            log.warning(
+                "[security] 凭据库 {} 设置 0600 权限失败（{!r}）——"
+                "请手动管好这个文件的权限",
+                db,
+                exc,
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -189,8 +208,11 @@ class CredentialStore:
         )
 
     def issue(
-        self, reporter_id: str, trust_level: TrustLevel,
-        roles: tuple[Role, ...], method: str = "hmac",
+        self,
+        reporter_id: str,
+        trust_level: TrustLevel,
+        roles: tuple[Role, ...],
+        method: str = "hmac",
         public_key: str = "",
     ) -> tuple[Credential, str]:
         """签发凭据，返回 (记录, 明文)。
@@ -204,16 +226,25 @@ class CredentialStore:
         else:
             secret = secrets.token_urlsafe(32)
         cred = Credential(
-            reporter_id=reporter_id, trust_level=trust_level,
-            roles=tuple(roles), method=method, secret=secret,
+            reporter_id=reporter_id,
+            trust_level=trust_level,
+            roles=tuple(roles),
+            method=method,
+            secret=secret,
         )
         with self._lock:
             self._conn.execute(
                 "INSERT INTO credentials"
                 " (reporter_id, trust_level, roles, method, secret, status, issued_at)"
                 " VALUES (?, ?, ?, ?, ?, 'active', ?)",
-                (reporter_id, trust_level.value, json.dumps([r.value for r in roles]),
-                 method, secret, cred.issued_at),
+                (
+                    reporter_id,
+                    trust_level.value,
+                    json.dumps([r.value for r in roles]),
+                    method,
+                    secret,
+                    cred.issued_at,
+                ),
             )
             self._conn.commit()
         return cred, secret
@@ -263,6 +294,7 @@ class CredentialStore:
 
 # ---- 6B 验证器 ----
 
+
 class NonceCache:
     """一次性 nonce 缓存（HMAC / Ed25519 共用机制）。
 
@@ -300,13 +332,15 @@ class HMACVerifier:
     （兼容存量），高风险端点另有 (reporter, 请求体hash) 去重兜底。
     """
 
-    def __init__(self, window_seconds: int = 300,
-                 nonce_cache: NonceCache | None = None) -> None:
+    def __init__(
+        self, window_seconds: int = 300, nonce_cache: NonceCache | None = None
+    ) -> None:
         self.window_seconds = window_seconds
         self.nonces = nonce_cache or NonceCache()
 
-    def verify(self, secret: str, ts: str, signature: str, body: bytes,
-               nonce: str = "") -> bool:
+    def verify(
+        self, secret: str, ts: str, signature: str, body: bytes, nonce: str = ""
+    ) -> bool:
         try:
             ts_int = int(ts)
         except ValueError:
@@ -315,8 +349,7 @@ class HMACVerifier:
             return False
         if nonce and not self.nonces.is_fresh(nonce):
             return False
-        signed = f"{ts}.{nonce}.".encode() + body if nonce \
-            else f"{ts}.".encode() + body
+        signed = f"{ts}.{nonce}.".encode() + body if nonce else f"{ts}.".encode() + body
         expected = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected, signature):
             return False
@@ -325,16 +358,16 @@ class HMACVerifier:
         return True
 
 
-def sign_request(secret: str, body: bytes, ts: int | None = None,
-                 nonce: str | None = None) -> dict[str, str]:
+def sign_request(
+    secret: str, body: bytes, ts: int | None = None, nonce: str | None = None
+) -> dict[str, str]:
     """生成控制面请求头（供 CLI / pytest-satori 插件 / 测试复用）。
 
     带 nonce 时签名覆盖 f"{ts}.{nonce}.{body}" 并附 X-Satori-Nonce 头；
     不传则保持存量格式（f"{ts}.{body}"），服务端两种都认。
     """
     ts = ts if ts is not None else int(time.time())
-    signed = f"{ts}.{nonce}.".encode() + body if nonce \
-        else f"{ts}.".encode() + body
+    signed = f"{ts}.{nonce}.".encode() + body if nonce else f"{ts}.".encode() + body
     signature = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
     headers = {
         H_TIMESTAMP: str(ts),
@@ -347,6 +380,7 @@ def sign_request(secret: str, body: bytes, ts: int | None = None,
 
 # ---- 6G Ed25519 非对称模式 ----
 
+
 class Ed25519Verifier:
     """ed25519 验签 + 时间窗 + nonce 一次性缓存。
 
@@ -358,8 +392,9 @@ class Ed25519Verifier:
 
     _NONCE_CACHE_MAX = 10_000
 
-    def __init__(self, window_seconds: int = 300,
-                 nonce_cache: NonceCache | None = None) -> None:
+    def __init__(
+        self, window_seconds: int = 300, nonce_cache: NonceCache | None = None
+    ) -> None:
         self.window_seconds = window_seconds
         self._nonces = nonce_cache or NonceCache(self._NONCE_CACHE_MAX)
 
@@ -371,11 +406,19 @@ class Ed25519Verifier:
             "nonce": nonce,
             "body_hash": hashlib.sha256(body).hexdigest(),
         }
-        return json.dumps(payload, sort_keys=True,
-                          separators=(",", ":")).encode("utf-8")
+        return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
 
-    def verify(self, public_key_pem: str, reporter_id: str, ts: str,
-               nonce: str, signature: str, body: bytes) -> bool:
+    def verify(
+        self,
+        public_key_pem: str,
+        reporter_id: str,
+        ts: str,
+        nonce: str,
+        signature: str,
+        body: bytes,
+    ) -> bool:
         if not (public_key_pem and reporter_id and ts and nonce and signature):
             return False
         try:
@@ -387,17 +430,12 @@ class Ed25519Verifier:
         if not self._nonces.is_fresh(nonce):
             return False  # 重放：只查不消费，坑位留给验签通过的请求
         try:
-            from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-                Ed25519PublicKey,
-            )
-            from cryptography.hazmat.primitives.serialization import (
-                load_pem_public_key,
-            )
             key = load_pem_public_key(public_key_pem.encode("utf-8"))
             if not isinstance(key, Ed25519PublicKey):
                 return False
-            key.verify(bytes.fromhex(signature),
-                       self.canonical(reporter_id, ts, nonce, body))
+            key.verify(
+                bytes.fromhex(signature), self.canonical(reporter_id, ts, nonce, body)
+            )
         except Exception:
             return False
         self._nonces.consume(nonce)  # 验签通过才消费——废签名不占坑
@@ -406,24 +444,26 @@ class Ed25519Verifier:
 
 def generate_keypair() -> tuple[str, str]:
     """生成 Ed25519 密钥对 (私钥 PEM, 公钥 PEM)。私钥只在 reporter 侧。"""
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import (
-        Encoding, NoEncryption, PrivateFormat, PublicFormat,
-    )
     private = Ed25519PrivateKey.generate()
     private_pem = private.private_bytes(
-        Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode("utf-8")
-    public_pem = private.public_key().public_bytes(
-        Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("utf-8")
+        Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()
+    ).decode("utf-8")
+    public_pem = (
+        private.public_key()
+        .public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+        .decode("utf-8")
+    )
     return private_pem, public_pem
 
 
 def sign_request_ed25519(
-    private_pem: str, reporter_id: str, body: bytes, ts: int | None = None,
+    private_pem: str,
+    reporter_id: str,
+    body: bytes,
+    ts: int | None = None,
     nonce: str | None = None,
 ) -> dict[str, str]:
     """Ed25519 模式的控制面请求头（插件 / CLI / 测试复用）。"""
-    from cryptography.hazmat.primitives.serialization import load_pem_private_key
     ts = ts if ts is not None else int(time.time())
     nonce = nonce or secrets.token_urlsafe(16)
     private = load_pem_private_key(private_pem.encode("utf-8"), password=None)
@@ -438,10 +478,10 @@ def sign_request_ed25519(
 
 # ---- 6B 统一认证入口 ----
 
+
 def _resolve_secret(raw: str) -> str:
     """env:VAR 前缀从环境变量读取（与 Upstream.resolve_key 同一约定）。"""
     if raw.startswith("env:"):
-        import os
         return os.environ.get(raw[4:], "")
     return raw
 
@@ -453,18 +493,24 @@ def _is_loopback(host: str) -> bool:
 class ControlAuth:
     """控制面认证/授权总入口。verify 对调用方只给 ControlIdentity。"""
 
-    def __init__(self, db: Path, enabled: bool = True, mode: str = "hmac",
-                 admin_secret: str = "", window_seconds: int = 300,
-                 host: str = "127.0.0.1", require_tls: bool | None = None,
-                 trusted_proxies: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        db: Path,
+        enabled: bool = True,
+        mode: str = "hmac",
+        admin_secret: str = "",
+        window_seconds: int = 300,
+        host: str = "127.0.0.1",
+        require_tls: bool | None = None,
+        trusted_proxies: list[str] | None = None,
+    ) -> None:
         self.enabled = enabled
         self.mode = mode
         self.host = host
         # HMAC / Ed25519 共用一套 nonce 缓存机制：跨模式重放同一 nonce 也拦
         self._nonce_cache = NonceCache()
         self.verifier = HMACVerifier(window_seconds, self._nonce_cache)
-        self.ed25519_verifier = Ed25519Verifier(window_seconds,
-                                                self._nonce_cache)
+        self.ed25519_verifier = Ed25519Verifier(window_seconds, self._nonce_cache)
         self.store = CredentialStore(db)
         self._admin_secret = _resolve_secret(admin_secret)
         self._bootstrap_secret = ""  # 回环 + 未配置 admin_secret 时首次启动生成
@@ -486,10 +532,10 @@ class ControlAuth:
         if client_ip in trusted:
             return True  # 精确匹配（测试客户端/主机名场景）
         try:
-            import ipaddress
             addr = ipaddress.ip_address(client_ip)
-            return any(addr in ipaddress.ip_network(net, strict=False)
-                       for net in trusted)
+            return any(
+                addr in ipaddress.ip_network(net, strict=False) for net in trusted
+            )
         except ValueError:
             return False
 
@@ -507,7 +553,7 @@ class ControlAuth:
             raise HTTPException(
                 status_code=403,
                 detail="控制面要求 HTTPS（security.require_tls）——"
-                       "或经可信反向代理以 X-Forwarded-Proto 转发",
+                "或经可信反向代理以 X-Forwarded-Proto 转发",
             )
 
     # ---- 启动自检 ----
@@ -525,13 +571,17 @@ class ControlAuth:
         if _is_loopback(self.host):
             self._bootstrap_secret = secrets.token_urlsafe(32)
             # 引导 token 是明文凭据——只写控制台，不落持久化日志文件
-            print("[security] 未配置 security.admin_secret，已生成一次性引导 token"
-                  "（仅打印这一次，重启失效，不落日志文件）：\n"
-                  f"    {self._bootstrap_secret}\n"
-                  "用它 POST /satori/admin/credentials 签发第一个 operator 凭据。",
-                  file=sys.stderr)
-            log.warning("[security] 未配置 security.admin_secret——"
-                        "一次性引导 token 已打印到 stderr（明文不落日志）")
+            print(
+                "[security] 未配置 security.admin_secret，已生成一次性引导 token"
+                "（仅打印这一次，重启失效，不落日志文件）：\n"
+                f"    {self._bootstrap_secret}\n"
+                "用它 POST /satori/admin/credentials 签发第一个 operator 凭据。",
+                file=sys.stderr,
+            )
+            log.warning(
+                "[security] 未配置 security.admin_secret——"
+                "一次性引导 token 已打印到 stderr（明文不落日志）"
+            )
             return self._bootstrap_secret
         raise RuntimeError(
             f"security.admin_secret 未配置且 host={self.host!r} 不是回环地址——"
@@ -558,18 +608,19 @@ class ControlAuth:
         if cred.method == "ed25519":
             nonce = request.headers.get(H_NONCE, "")
             ok = self.ed25519_verifier.verify(
-                cred.secret, reporter_id, ts, nonce, signature, body)
+                cred.secret, reporter_id, ts, nonce, signature, body
+            )
         else:
             # nonce 可选：带了就按 nonce 签名验（一次性防重放），
             # 不带的存量客户端按旧格式验
             nonce = request.headers.get(H_NONCE, "")
-            ok = self.verifier.verify(cred.secret, ts, signature, body,
-                                      nonce=nonce)
+            ok = self.verifier.verify(cred.secret, ts, signature, body, nonce=nonce)
         if not ok:
             return None
         self.store.touch(reporter_id, request.client.host if request.client else None)
-        return ControlIdentity(reporter_id, cred.trust_level,
-                               frozenset(cred.roles), cred.method)
+        return ControlIdentity(
+            reporter_id, cred.trust_level, frozenset(cred.roles), cred.method
+        )
 
     def _admin_ok(self, provided: str) -> bool:
         if not provided:
@@ -596,7 +647,7 @@ class ControlAuth:
                 raise HTTPException(
                     status_code=403,
                     detail=f"该操作需要 {role.value} 角色（当前："
-                           f"{sorted(r.value for r in identity.roles)}）",
+                    f"{sorted(r.value for r in identity.roles)}）",
                 )
             # 挂到 request.state：handler 走路由级 dependency 时从此取身份
             # （方法签名默认值在类定义时求值，碰不到 self——别在那儿写 Depends）
@@ -623,8 +674,12 @@ class ControlAuth:
     # ---- 签发辅助 ----
 
     def issue_for_request(
-        self, reporter_id: str, trust_level: str, roles: list[str],
-        method: str | None = None, public_key: str = "",
+        self,
+        reporter_id: str,
+        trust_level: str,
+        roles: list[str],
+        method: str | None = None,
+        public_key: str = "",
     ) -> tuple[dict, str]:
         """校验入参并签发。非法入参抛 ValueError / 已存在抛 KeyError。"""
         method = method or self.mode
@@ -635,15 +690,16 @@ class ControlAuth:
         try:
             level = TrustLevel(trust_level)
         except ValueError:
-            raise ValueError(f"未知 trust_level: {trust_level!r}"
-                             f"（可选：{[t.value for t in TrustLevel]}）")
+            raise ValueError(
+                f"未知 trust_level: {trust_level!r}"
+                f"（可选：{[t.value for t in TrustLevel]}）"
+            )
         parsed: list[Role] = []
         for r in roles:
             try:
                 parsed.append(Role(r))
             except ValueError:
-                raise ValueError(f"未知角色: {r!r}"
-                                 f"（可选：{[x.value for x in Role]}）")
+                raise ValueError(f"未知角色: {r!r}（可选：{[x.value for x in Role]}）")
         if not reporter_id or not reporter_id.strip():
             raise ValueError("reporter_id 不能为空")
         if self.store.get_active(reporter_id) is not None:
@@ -651,20 +707,20 @@ class ControlAuth:
         if method == "ed25519":
             # 公钥必须能加载，否则签发的是一张废证
             try:
-                from cryptography.hazmat.primitives.serialization import (
-                    load_pem_public_key,
-                )
                 load_pem_public_key(public_key.encode("utf-8"))
             except Exception as exc:
                 raise ValueError(f"public_key 不是合法的 PEM 公钥: {exc}") from None
-        cred, secret = self.store.issue(reporter_id, level, tuple(parsed),
-                                        method, public_key=public_key)
+        cred, secret = self.store.issue(
+            reporter_id, level, tuple(parsed), method, public_key=public_key
+        )
         return cred.to_meta(), secret
 
 
 # 鉴权关闭时的匿名身份：显式放弃鉴权的开发模式才有，
 # 启动日志会醒目警告（默认安全：不安全必须显式选择）
 _ANONYMOUS = ControlIdentity(
-    "anonymous", TrustLevel.TRUSTED,
-    frozenset({Role.REPORTER, Role.OPERATOR, Role.ADMIN}), "disabled",
+    "anonymous",
+    TrustLevel.TRUSTED,
+    frozenset({Role.REPORTER, Role.OPERATOR, Role.ADMIN}),
+    "disabled",
 )

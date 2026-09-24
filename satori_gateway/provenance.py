@@ -31,26 +31,29 @@ def probe_hash(prompt: str | None) -> str | None:
     return hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12]
 
 
-def write_sidecar(reference: Path, *, source: str,
-                  pressure_level: str | None = None,
-                  notes: str = "", prompt: str | None = None,
-                  vendor: str | None = None,
-                  collected_at: float | None = None) -> Path:
+def write_sidecar(
+    reference: Path,
+    *,
+    source: str,
+    pressure_level: str | None = None,
+    notes: str = "",
+    prompt: str | None = None,
+    vendor: str | None = None,
+    collected_at: float | None = None,
+) -> Path:
     """给一份刚写下的参考文件写出身证明，返回 sidecar 路径。"""
     if pressure_level is None:
-        pressure_level = (ProviderPressure(vendor or "").level_at()
-                          if vendor else "MID")
+        pressure_level = ProviderPressure(vendor or "").level_at() if vendor else "MID"
     meta = {
-        "source": source,                      # official / secondhand / community
+        "source": source,  # official / secondhand / community
         "collected_at": collected_at or time.time(),
         "collector": f"satori-gateway/{COLLECTOR_VERSION}",
-        "pressure_level": pressure_level,      # LOW/MID/HIGH/EXTR
+        "pressure_level": pressure_level,  # LOW/MID/HIGH/EXTR
         "probe_prompt_hash": probe_hash(prompt),
         "notes": notes,
     }
     path = sidecar_path(reference)
-    path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
-                    encoding="utf-8")
+    path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 

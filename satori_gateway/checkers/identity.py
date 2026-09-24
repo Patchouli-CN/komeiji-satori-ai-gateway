@@ -96,14 +96,19 @@ class IdentityProbeChecker:
     async def _ask(
         self, client: httpx.AsyncClient, upstream: Upstream, model: str, prompt: str
     ) -> tuple[str, dict[str, float]]:
-        data = await chat_once(client, upstream, {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": self.cfg.max_tokens,
-            "temperature": 0,
-            "logprobs": True,
-            "top_logprobs": self.fp_cfg.top_logprobs,
-        }, timeout=60)
+        data = await chat_once(
+            client,
+            upstream,
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": self.cfg.max_tokens,
+                "temperature": 0,
+                "logprobs": True,
+                "top_logprobs": self.fp_cfg.top_logprobs,
+            },
+            timeout=60,
+        )
         choice = data["choices"][0]
         content = choice["message"].get("content") or ""
         dist: dict[str, float] = {}
@@ -161,6 +166,10 @@ class IdentityProbeChecker:
             detail += " —— " + "；".join(problems)
         # score：问题数（0 即清白），供事件流排序
         return CheckResult(
-            self.name, upstream.name, model, not problems,
-            float(len(problems)), detail,
+            self.name,
+            upstream.name,
+            model,
+            not problems,
+            float(len(problems)),
+            detail,
         )

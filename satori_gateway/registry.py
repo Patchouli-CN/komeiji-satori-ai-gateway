@@ -21,13 +21,13 @@ serve 启动时 discover() 会自动导入并装配。
 from __future__ import annotations
 
 import importlib
-import logging
 import pkgutil
 
 from .checkers import Checker
 from .config import Config
+from .logger import LoggerManager
 
-log = logging.getLogger("satori")
+log = LoggerManager.get_logger("REGISTRY")
 
 # 注册表：checker 类列表（注册顺序即执行顺序）
 _REGISTRY: list[type] = []
@@ -47,12 +47,14 @@ def discover() -> None:
     global _discovered
     if _discovered:
         return
+    # 留在函数内：模块顶部 import checkers 会在包扫描前就加载全部插件模块，
+    # 且 checkers 各模块 import registry 注册自己，提顶即循环依赖
     from . import checkers
 
     for mod in pkgutil.iter_modules(checkers.__path__):
         importlib.import_module(f"{checkers.__name__}.{mod.name}")
     _discovered = True
-    log.info("checker 自动发现完成：%d 个已注册", len(_REGISTRY))
+    log.info("checker 自动发现完成：{} 个已注册", len(_REGISTRY))
 
 
 def build_checkers(cfg: Config) -> list[Checker]:
@@ -63,7 +65,7 @@ def build_checkers(cfg: Config) -> list[Checker]:
         checker = cls.from_config(cfg)
         if checker is not None:
             built.append(checker)
-            log.info("checker 启用: %s", checker.name)
+            log.info("checker 启用: {}", checker.name)
         else:
-            log.info("checker 跳过（配置禁用）: %s", cls.__name__)
+            log.info("checker 跳过（配置禁用）: {}", cls.__name__)
     return built

@@ -15,19 +15,20 @@ Tool Call 场景下，"模型被降级"的危害不再是"回答变笨"，而是
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
 
 # 结构化异常权重（保守：单项不足以独立熔断，持续异常才累积）
-SLOP_BROKEN_ARGS = 30.0     # 参数不是合法 JSON——断链的最典型形态
-SLOP_UNKNOWN_TOOL = 20.0    # 调了请求里没声明的工具（幻觉）
-SLOP_REPEAT = 15.0          # 同一响应内重复 identical 调用（复读机）
-SLOP_ARGS_BLOAT = 10.0      # 参数膨胀 > 8KB
+SLOP_BROKEN_ARGS = 30.0  # 参数不是合法 JSON——断链的最典型形态
+SLOP_UNKNOWN_TOOL = 20.0  # 调了请求里没声明的工具（幻觉）
+SLOP_REPEAT = 15.0  # 同一响应内重复 identical 调用（复读机）
+SLOP_ARGS_BLOAT = 10.0  # 参数膨胀 > 8KB
 SLOP_ARGS_BLOAT_BYTES = 8192
-CONFIRM_STEPS = 2           # 同 session 累计几步 suspicious 算实锤
-CONFIRMED_SCORE = 40.0      # 实锤注入分（权重高于 Logprob 的 20；仍受跨线规则钳制）
-MAX_SESSIONS = 1000         # 未实锤 session 的跟踪上限（防无界增长），最久不活动的先淘汰
+CONFIRM_STEPS = 2  # 同 session 累计几步 suspicious 算实锤
+CONFIRMED_SCORE = 40.0  # 实锤注入分（权重高于 Logprob 的 20；仍受跨线规则钳制）
+MAX_SESSIONS = 1000  # 未实锤 session 的跟踪上限（防无界增长），最久不活动的先淘汰
 
 
 @dataclass
@@ -41,9 +42,14 @@ class ToolStep:
     score: float = 0.0
 
     def to_dict(self) -> dict:
-        return {"index": self.index, "tool": self.tool,
-                "args_valid": self.args_valid, "args_bytes": self.args_bytes,
-                "flags": self.flags, "score": self.score}
+        return {
+            "index": self.index,
+            "tool": self.tool,
+            "args_valid": self.args_valid,
+            "args_bytes": self.args_bytes,
+            "flags": self.flags,
+            "score": self.score,
+        }
 
 
 @dataclass
@@ -52,11 +58,12 @@ class ToolTrace:
     ts: float
     steps: list[ToolStep]
     slop_score: float
-    first_suspicious: int     # 第一个 score>0 的步；-1 表示干净
+    first_suspicious: int  # 第一个 score>0 的步；-1 表示干净
 
     def to_dict(self) -> dict:
         return {
-            "trace_id": self.trace_id, "ts": self.ts,
+            "trace_id": self.trace_id,
+            "ts": self.ts,
             "steps": [s.to_dict() for s in self.steps],
             "slop_score": self.slop_score,
             "first_suspicious": self.first_suspicious,
@@ -74,9 +81,9 @@ def _declared_names(declared_tools) -> set[str]:
     return names
 
 
-def score_tool_calls(tool_calls: list[dict],
-                     declared_tools=None,
-                     trace_id: str | None = None) -> ToolTrace | None:
+def score_tool_calls(
+    tool_calls: list[dict], declared_tools=None, trace_id: str | None = None
+) -> ToolTrace | None:
     """给一次响应里的 tool_calls 链打分。无工具调用返回 None。"""
     if not tool_calls:
         return None
@@ -93,7 +100,6 @@ def score_tool_calls(tool_calls: list[dict],
         # 空参数视为合法（无参工具）；非空但解析失败才是断链
         valid = True
         if args:
-            import json
             try:
                 json.loads(args)
             except json.JSONDecodeError:
@@ -115,8 +121,9 @@ def score_tool_calls(tool_calls: list[dict],
         steps.append(ToolStep(i, name, args, valid, len(args), flags, score))
         total += score
     first = next((s.index for s in steps if s.score > 0), -1)
-    return ToolTrace(trace_id or uuid.uuid4().hex[:16], time.time(),
-                     steps, total, first)
+    return ToolTrace(
+        trace_id or uuid.uuid4().hex[:16], time.time(), steps, total, first
+    )
 
 
 class SlopLedger:
@@ -127,8 +134,9 @@ class SlopLedger:
     session 头的流量可能每请求一个新值，不许它把内存撑爆。
     """
 
-    def __init__(self, confirm_steps: int = CONFIRM_STEPS,
-                 max_sessions: int = MAX_SESSIONS) -> None:
+    def __init__(
+        self, confirm_steps: int = CONFIRM_STEPS, max_sessions: int = MAX_SESSIONS
+    ) -> None:
         self.confirm_steps = confirm_steps
         self.max_sessions = max_sessions
         self._sessions: dict[str, list[dict]] = {}  # 有序：久未活动的在前
@@ -146,10 +154,14 @@ class SlopLedger:
             # 活跃 session 排到队尾（dict 保插入序：pop 再插即移尾）
             self._sessions[session] = self._sessions.pop(session)
             steps = self._sessions[session]
-        steps.append({"trace_id": trace.trace_id,
-                      "first_suspicious": trace.first_suspicious,
-                      "score": trace.slop_score,
-                      "flags": [f for s in trace.steps for f in s.flags]})
+        steps.append(
+            {
+                "trace_id": trace.trace_id,
+                "first_suspicious": trace.first_suspicious,
+                "score": trace.slop_score,
+                "flags": [f for s in trace.steps for f in s.flags],
+            }
+        )
         if len(steps) < self.confirm_steps:
             return None
         confirmed = {
@@ -166,5 +178,8 @@ class SlopLedger:
         return len(self._sessions.get(session, []))
 
     def summary(self) -> list[dict]:
-        return [{"session": s, "suspicious_steps": len(v)}
-                for s, v in self._sessions.items() if v]
+        return [
+            {"session": s, "suspicious_steps": len(v)}
+            for s, v in self._sessions.items()
+            if v
+        ]

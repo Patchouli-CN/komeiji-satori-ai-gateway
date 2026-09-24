@@ -31,19 +31,22 @@ DEFAULT_TZ = "UTC"
 
 # 通用流量模式：本地小时 → 压力等级。夜间黄金窗口，工作日高峰可疑
 _HOUR_PATTERN: dict[int, str] = {
-    **{h: "LOW" for h in range(0, 7)},      # 00-06 黄金窗口
+    **{h: "LOW" for h in range(0, 7)},  # 00-06 黄金窗口
     **{h: "MID" for h in (7, 8, 19, 20, 21)},  # 早晚过渡带
     **{h: "HIGH" for h in (9, 10, 11, 15, 16, 17, 18)},  # 工作高峰
-    12: "MID", 13: "MID", 14: "MID",          # 午休回落
-    22: "LOW", 23: "LOW",
+    12: "MID",
+    13: "MID",
+    14: "MID",  # 午休回落
+    22: "LOW",
+    23: "LOW",
 }
 
 # 压力 → 信任权重（v4 Phase 0.2 基线质量权重映射）
 PRESSURE_WEIGHT: dict[str, float] = {
-    "LOW": 1.0,    # 不削弱
-    "MID": 1.0,    # 可接受
-    "HIGH": 0.6,   # 显著削弱，自动降级为 STANDARD 起点
-    "EXTR": 0.0,   # 完全弃用，拒绝作为 STRICT 基线
+    "LOW": 1.0,  # 不削弱
+    "MID": 1.0,  # 可接受
+    "HIGH": 0.6,  # 显著削弱，自动降级为 STANDARD 起点
+    "EXTR": 0.0,  # 完全弃用，拒绝作为 STRICT 基线
 }
 
 _GOLDEN = ("LOW", "MID")
@@ -52,8 +55,9 @@ _GOLDEN = ("LOW", "MID")
 class ProviderPressure:
     """按厂商本地时间报压力等级。纯函数，不打网络、不看进程状态。"""
 
-    def __init__(self, vendor: str, tz: str | None = None,
-                 pattern: dict[int, str] | None = None) -> None:
+    def __init__(
+        self, vendor: str, tz: str | None = None, pattern: dict[int, str] | None = None
+    ) -> None:
         self.vendor = vendor
         self.tz_name = tz or VENDOR_TZ.get(vendor.lower(), DEFAULT_TZ)
         self.pattern = pattern or _HOUR_PATTERN
@@ -70,8 +74,7 @@ class ProviderPressure:
         local_hour = datetime.fromtimestamp(ts, self._zone()).hour
         return self.pattern.get(local_hour, "MID")
 
-    def weight_at(self, now: float | None = None,
-                  level: str | None = None) -> float:
+    def weight_at(self, now: float | None = None, level: str | None = None) -> float:
         lv = level or self.level_at(now)
         return PRESSURE_WEIGHT.get(lv, 1.0)
 
@@ -90,6 +93,8 @@ class ProviderPressure:
         lv = self.level_at(now)
         zone = self._zone()
         local = datetime.fromtimestamp(now or time.time(), zone)
-        return (f"Current pressure: {lv} (vendor {self.vendor} local "
-                f"{local:%H:%M} {self.tz_name}). Weight: "
-                f"{self.weight_at(level=lv):.1f}.")
+        return (
+            f"Current pressure: {lv} (vendor {self.vendor} local "
+            f"{local:%H:%M} {self.tz_name}). Weight: "
+            f"{self.weight_at(level=lv):.1f}."
+        )

@@ -32,16 +32,18 @@ _DEFAULT_LEVEL = "L1"
 
 def satori_test(level: str = _DEFAULT_LEVEL):
     """标记一个测试的级别（L0 确定性 / L1 语义 / L2 复杂推理）。"""
+
     def deco(fn):
         setattr(fn, _REPORTER_ATTR, level)
         return fn
+
     return deco
 
 
 def pytest_configure(config):
     reporter = SatoriReporter.from_env()
     config._satori_reporter = reporter  # noqa: SLF001 — pytest 惯例：挂 config 上
-    config._satori_pending = []          # noqa: SLF001
+    config._satori_pending = []  # noqa: SLF001
     if reporter is None:
         return
     # 未配 upstream/model 时提示：report 端点会按配置校验目标存在性
@@ -125,16 +127,20 @@ def pytest_sessionfinish(session, exitstatus):
         try:
             result = reporter.send(report)
         except Exception as exc:  # 签名缺材料等——入队兜底，绝不穿透收尾
-            warnings.warn(f"satori: 上报 {report.get('test_name')} 异常（{exc!r}），"
-                          "已入队补发", stacklevel=1)
+            warnings.warn(
+                f"satori: 上报 {report.get('test_name')} 异常（{exc!r}），已入队补发",
+                stacklevel=1,
+            )
             reporter._enqueue(report)  # noqa: SLF001
             failed_this_round.append(report)
             continue
         if result.action and not result.ok:
             # rejected（4xx 毒丸）由 send() 打印过警告且未入队；这里只处理入队的
             if result.action != "rejected":
-                print(f"[satori] 上报失败（已入队补发）：{report['test_name']} "
-                      f"→ {result.status_code} {result.detail}")
+                print(
+                    f"[satori] 上报失败（已入队补发）：{report['test_name']} "
+                    f"→ {result.status_code} {result.detail}"
+                )
                 failed_this_round.append(report)
     # 队列里攒着旧账的，顺手尝试补发；本轮刚入队的跳过——别同轮双发
     flushed = reporter.flush_queue(skip=failed_this_round)

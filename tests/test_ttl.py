@@ -23,22 +23,24 @@ from satori_gateway.ttl import (
     reject_outliers,
 )
 
-from test_phase1 import KEY, build, env, issue
+from test_phase1 import KEY, env, issue  # noqa: F401  （pytest fixture 注入用）
 
 
-def make_events(state: StateStore, model: str,
-                intervals_days: list[float], upstream: str = "openai") -> None:
+def make_events(
+    state: StateStore, model: str, intervals_days: list[float], upstream: str = "openai"
+) -> None:
     """造 len(intervals)+1 条事件，使相邻间隔正好等于 intervals_days
     （intervals() 返回的是 n-1 个间隔——事件比间隔多一个）。
     事件归属 (upstream, model)：同名模型跨上游的账分开学。"""
     ts = time.time() - 86400 * (sum(intervals_days) + 1)
     state.append_baseline_event(
-        {"ts": ts, "upstream": upstream, "model": model, "event": "refreshed"})
+        {"ts": ts, "upstream": upstream, "model": model, "event": "refreshed"}
+    )
     for gap in intervals_days:
         ts += 86400 * gap
         state.append_baseline_event(
-            {"ts": ts, "upstream": upstream, "model": model,
-             "event": "refreshed"})
+            {"ts": ts, "upstream": upstream, "model": model, "event": "refreshed"}
+        )
 
 
 class TestMedianAndOutliers:
@@ -61,7 +63,10 @@ class TestTtlLearning:
         state = StateStore(tmp_path / "s")
         engine = TtlEngine(state)
         assert engine.ttl_for("openai", "gpt-4o") == (
-            COLD_START_TTL_DAYS, "cold-start", 0)
+            COLD_START_TTL_DAYS,
+            "cold-start",
+            0,
+        )
         make_events(state, "gpt-4o", [10.0, 12.0])  # 只 2 个间隔（3 条事件）
         assert engine.ttl_for("openai", "gpt-4o")[0] == COLD_START_TTL_DAYS
 
@@ -131,7 +136,8 @@ class TestTtlLearning:
         for _ in range(6):
             ts += 86400 * 10
             state.append_baseline_event(
-                {"ts": ts, "model": "gpt-4o", "event": "refreshed"})
+                {"ts": ts, "model": "gpt-4o", "event": "refreshed"}
+            )
         assert engine.ttl_for("openai", "gpt-4o")[1] == "median"
         assert engine.ttl_for("relay", "gpt-4o")[1] == "median"
 
@@ -150,33 +156,32 @@ class TestVerdictAndWarnings:
         now = time.time()
         # 手动锁定 10 天 TTL，逐段看状态翻转
         engine.override("openai", "gpt-4o", ttl_days=10.0)
-        assert engine.verdict("openai", "gpt-4o",
-                              now - 86400 * 5).state == "fresh"
-        assert engine.verdict("openai", "gpt-4o",
-                              now - 86400 * 8).state == "aging"
-        assert engine.verdict("openai", "gpt-4o",
-                              now - 86400 * 9.5).state == "critical"
-        assert engine.verdict("openai", "gpt-4o",
-                              now - 86400 * 12).state == "expired"
+        assert engine.verdict("openai", "gpt-4o", now - 86400 * 5).state == "fresh"
+        assert engine.verdict("openai", "gpt-4o", now - 86400 * 8).state == "aging"
+        assert engine.verdict("openai", "gpt-4o", now - 86400 * 9.5).state == "critical"
+        assert engine.verdict("openai", "gpt-4o", now - 86400 * 12).state == "expired"
 
     def test_warning_fires_once_per_state(self, tmp_path):
         _, engine = self._engine(tmp_path)
         now = time.time()
         engine.override("openai", "gpt-4o", ttl_days=10.0)
-        first = engine.due_warnings(engine.verdict("openai", "gpt-4o",
-                                                   now - 86400 * 8))
+        first = engine.due_warnings(engine.verdict("openai", "gpt-4o", now - 86400 * 8))
         assert first and "老化" in first
         # 同一状态不重复点灯
-        assert engine.due_warnings(engine.verdict(
-            "openai", "gpt-4o", now - 86400 * 8.1)) is None
+        assert (
+            engine.due_warnings(engine.verdict("openai", "gpt-4o", now - 86400 * 8.1))
+            is None
+        )
         # 状态升级再点
-        second = engine.due_warnings(engine.verdict("openai", "gpt-4o",
-                                                    now - 86400 * 12))
+        second = engine.due_warnings(
+            engine.verdict("openai", "gpt-4o", now - 86400 * 12)
+        )
         assert second and "不会自动退役" in second  # 预测不误杀写进灯语
 
     def test_expired_never_retires_baseline(self, env, tmp_path):
         """红灯只是灯——reference 文件必须还在（退役只认 feedback）。"""
         from test_phase1 import write_refs
+
         satori, _ = env
         write_refs(satori, collected_at=time.time() - 86400 * 60)  # 60 天前采集
         satori.baselines.recompute(*KEY)
@@ -184,8 +189,9 @@ class TestVerdictAndWarnings:
         verdict = satori.ttl.verdict(st.upstream, st.model, st.collected_at)
         assert verdict.state == "expired"
         # 过期了，但基线文件没被动过，也没有任何退役动作
-        assert (satori.config.fingerprint.reference_dir
-                / "openai--gpt-4o.json").exists()
+        assert (
+            satori.config.fingerprint.reference_dir / "openai--gpt-4o.json"
+        ).exists()
         assert satori.baselines.get(*KEY).retired_at is None
 
     def test_thresholds_ordered(self):
@@ -212,10 +218,20 @@ class TestOverride:
     def test_legacy_bare_model_key_still_honored(self, tmp_path):
         """旧格式 override 文件（裸 model 键）按通配兼容读出。"""
         state = StateStore(tmp_path / "s")
-        (tmp_path / "s" / "ttl_overrides.json").write_text(json.dumps(
-            {"gpt-4o": {"model": "gpt-4o", "ttl_days": 45.0,
-                        "expires_at": None, "reason": "旧格式",
-                        "set_at": time.time()}}), encoding="utf-8")
+        (tmp_path / "s" / "ttl_overrides.json").write_text(
+            json.dumps(
+                {
+                    "gpt-4o": {
+                        "model": "gpt-4o",
+                        "ttl_days": 45.0,
+                        "expires_at": None,
+                        "reason": "旧格式",
+                        "set_at": time.time(),
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
         engine = TtlEngine(state)
         assert engine.ttl_for("openai", "gpt-4o") == (45.0, "override", 0)
         assert engine.override_of("openai", "gpt-4o")["reason"] == "旧格式"
@@ -233,21 +249,34 @@ class TestOverride:
 
     def test_endpoint_requires_operator(self, env):
         satori, client = env
-        body = json.dumps({"upstream": "openai", "model": "gpt-4o",
-                           "ttl_days": 60, "reason": "等发版"}).encode()
+        body = json.dumps(
+            {
+                "upstream": "openai",
+                "model": "gpt-4o",
+                "ttl_days": 60,
+                "reason": "等发版",
+            }
+        ).encode()
         # 无凭据 → 401
         r = client.post("/satori/baseline/ttl/override", content=body)
         assert r.status_code == 401
         # reporter 角色 → 403
         secret = issue(client, "bob")
         from satori_gateway.security import H_REPORTER, sign_request
-        r = client.post("/satori/baseline/ttl/override", content=body, headers={
-            H_REPORTER: "bob", **sign_request(secret, body)})
+
+        r = client.post(
+            "/satori/baseline/ttl/override",
+            content=body,
+            headers={H_REPORTER: "bob", **sign_request(secret, body)},
+        )
         assert r.status_code == 403
         # operator → 200，且立即反映到基线状态
         op = issue(client, "op", roles=["operator"])
-        r = client.post("/satori/baseline/ttl/override", content=body, headers={
-            H_REPORTER: "op", **sign_request(op, body)})
+        r = client.post(
+            "/satori/baseline/ttl/override",
+            content=body,
+            headers={H_REPORTER: "op", **sign_request(op, body)},
+        )
         assert r.status_code == 200
         assert satori.baselines.get(*KEY).ttl_days == 60.0
         assert satori.ttl.override_of("openai", "gpt-4o")["reason"] == "等发版"
@@ -259,34 +288,49 @@ class TestOverride:
 
         def post(payload):
             raw = json.dumps(payload).encode()
-            return client.post("/satori/baseline/ttl/override", content=raw,
-                               headers={H_REPORTER: "op",
-                                        **sign_request(op, raw)})
+            return client.post(
+                "/satori/baseline/ttl/override",
+                content=raw,
+                headers={H_REPORTER: "op", **sign_request(op, raw)},
+            )
 
-        assert post({"upstream": "ghost", "model": "x",
-                     "ttl_days": 30}).status_code == 400
+        assert (
+            post({"upstream": "ghost", "model": "x", "ttl_days": 30}).status_code == 400
+        )
         assert post({"upstream": "openai", "model": "gpt-4o"}).status_code == 400
-        assert post({"upstream": "openai", "model": "gpt-4o",
-                     "ttl_days": "abc"}).status_code == 400
+        assert (
+            post(
+                {"upstream": "openai", "model": "gpt-4o", "ttl_days": "abc"}
+            ).status_code
+            == 400
+        )
         # 负数 / NaN / expires_at-only 一并拒绝——锁的语义必须完整且有限
-        assert post({"upstream": "openai", "model": "gpt-4o",
-                     "ttl_days": -5}).status_code == 400
-        assert post({"upstream": "openai", "model": "gpt-4o",
-                     "ttl_days": float("nan")}).status_code == 400
-        r = post({"upstream": "openai", "model": "gpt-4o",
-                  "expires_at": time.time() + 86400})
+        assert (
+            post({"upstream": "openai", "model": "gpt-4o", "ttl_days": -5}).status_code
+            == 400
+        )
+        assert (
+            post(
+                {"upstream": "openai", "model": "gpt-4o", "ttl_days": float("nan")}
+            ).status_code
+            == 400
+        )
+        r = post(
+            {"upstream": "openai", "model": "gpt-4o", "expires_at": time.time() + 86400}
+        )
         assert r.status_code == 400 and "ttl_days" in r.json()["detail"]
 
 
 class TestStatusSurface:
     def test_status_exposes_ttl(self, env):
         from test_phase1 import write_refs
+
         satori, client = env
         write_refs(satori, collected_at=time.time() - 86400 * 8)
         satori.baselines.recompute_all()
         r = client.get("/satori/status")
         entry = r.json()["baselines"][0]
-        assert entry["ttl"]["ttl_days"] == 30.0     # 冷启动固定值
+        assert entry["ttl"]["ttl_days"] == 30.0  # 冷启动固定值
         assert entry["ttl"]["state"] == "fresh"
         assert entry["ttl"]["events"] == 0
         assert entry["ttl_override"] is None

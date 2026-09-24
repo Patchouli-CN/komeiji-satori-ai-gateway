@@ -46,15 +46,17 @@ def _tools_to_openai(tools) -> list[dict]:
     """Anthropic tools → 规范 tools。input_schema → parameters。"""
     out = []
     for t in tools or []:
-        out.append({
-            "type": "function",
-            "function": {
-                "name": t.get("name", ""),
-                "description": t.get("description", ""),
-                "parameters": t.get("input_schema")
-                or {"type": "object", "properties": {}},
-            },
-        })
+        out.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": t.get("name", ""),
+                    "description": t.get("description", ""),
+                    "parameters": t.get("input_schema")
+                    or {"type": "object", "properties": {}},
+                },
+            }
+        )
     return out
 
 
@@ -62,8 +64,7 @@ def _tool_choice_to_openai(choice):
     """Anthropic tool_choice → 规范。形状相近的直传，auto/none/any 同名；
     tool{name} → function{name}。"""
     if isinstance(choice, dict) and choice.get("type") == "tool":
-        return {"type": "function",
-                "function": {"name": choice.get("name", "")}}
+        return {"type": "function", "function": {"name": choice.get("name", "")}}
     return choice
 
 
@@ -101,28 +102,37 @@ def _message_to_canonical(msg: dict) -> list[dict]:
                 url = f"data:{src.get('media_type', 'image/png')};base64,{src.get('data', '')}"
                 texts.append({"type": "image_url", "image_url": {"url": url}})
         elif btype == "tool_use":
-            tool_calls.append({
-                "id": block.get("id") or f"call_{uuid.uuid4().hex[:24]}",
-                "type": "function",
-                "function": {
-                    "name": block.get("name", ""),
-                    "arguments": json.dumps(block.get("input") or {},
-                                            ensure_ascii=False),
-                },
-            })
+            tool_calls.append(
+                {
+                    "id": block.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name", ""),
+                        "arguments": json.dumps(
+                            block.get("input") or {}, ensure_ascii=False
+                        ),
+                    },
+                }
+            )
         elif btype == "tool_result":
-            tool_results.append({
-                "role": "tool",
-                "tool_call_id": block.get("tool_use_id", ""),
-                "content": _tool_result_text(block.get("content")),
-            })
+            tool_results.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": block.get("tool_use_id", ""),
+                    "content": _tool_result_text(block.get("content")),
+                }
+            )
 
     out: list[dict] = []
     if role == "assistant" and tool_calls:
         text_only = "\n".join(t for t in texts if isinstance(t, str))
-        out.append({"role": "assistant",
-                    "content": text_only or None,
-                    "tool_calls": tool_calls})
+        out.append(
+            {
+                "role": "assistant",
+                "content": text_only or None,
+                "tool_calls": tool_calls,
+            }
+        )
     elif texts:
         if all(isinstance(t, str) for t in texts):
             out.append({"role": role, "content": "\n".join(texts)})
@@ -187,19 +197,23 @@ class AnthropicAdapter:
             except json.JSONDecodeError:
                 # 畸形参数也照样转运——断链的现场留给检测核心去认
                 input_json = {"_unparseable": raw_args}
-            content_blocks.append({
-                "type": "tool_use",
-                "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
-                "name": fn.get("name", ""),
-                "input": input_json,
-            })
+            content_blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
+                    "name": fn.get("name", ""),
+                    "input": input_json,
+                }
+            )
         return {
             "id": payload.get("id", "msg_satori"),
             "type": "message",
             "role": "assistant",
             "model": payload.get("model", ""),
             "content": content_blocks,
-            "stop_reason": _FINISH_MAP.get(choice.get("finish_reason") or "stop", "end_turn"),
+            "stop_reason": _FINISH_MAP.get(
+                choice.get("finish_reason") or "stop", "end_turn"
+            ),
             "stop_sequence": None,
             "usage": {
                 "input_tokens": usage.get("prompt_tokens", 0),
@@ -211,33 +225,55 @@ class AnthropicAdapter:
 
     def translate_sse(self, chunk: dict, state: dict) -> list[dict]:
         events: list[dict] = []
-        state.setdefault("blocks", {})       # canonical tool_calls index → Anthropic block index
+        state.setdefault(
+            "blocks", {}
+        )  # canonical tool_calls index → Anthropic block index
         state.setdefault("open_tools", set())
         state.setdefault("text_open", True)
         if not state.get("started"):
             state["started"] = True
-            events.append({"event": "message_start", "data": {
-                "type": "message_start",
-                "message": {
-                    "id": chunk.get("id") or f"msg_{uuid.uuid4().hex[:24]}",
-                    "type": "message", "role": "assistant",
-                    "model": chunk.get("model", ""),
-                    "content": [], "stop_reason": None, "stop_sequence": None,
-                    "usage": {"input_tokens": 0, "output_tokens": 0},
-                },
-            }})
-            events.append({"event": "content_block_start", "data": {
-                "type": "content_block_start", "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }})
+            events.append(
+                {
+                    "event": "message_start",
+                    "data": {
+                        "type": "message_start",
+                        "message": {
+                            "id": chunk.get("id") or f"msg_{uuid.uuid4().hex[:24]}",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": chunk.get("model", ""),
+                            "content": [],
+                            "stop_reason": None,
+                            "stop_sequence": None,
+                            "usage": {"input_tokens": 0, "output_tokens": 0},
+                        },
+                    },
+                }
+            )
+            events.append(
+                {
+                    "event": "content_block_start",
+                    "data": {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                }
+            )
 
         choice = (chunk.get("choices") or [{}])[0]
         delta = choice.get("delta") or {}
         if delta.get("content"):
-            events.append({"event": "content_block_delta", "data": {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": delta["content"]},
-            }})
+            events.append(
+                {
+                    "event": "content_block_delta",
+                    "data": {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": delta["content"]},
+                    },
+                }
+            )
 
         for tc in delta.get("tool_calls") or []:
             events.extend(self._tool_events(tc, state))
@@ -260,49 +296,81 @@ class AnthropicAdapter:
             block_index = 1 + len(state["blocks"])
             state["blocks"][idx] = block_index
             if state.get("text_open"):
-                events.append({"event": "content_block_stop", "data": {
-                    "type": "content_block_stop", "index": 0}})
+                events.append(
+                    {
+                        "event": "content_block_stop",
+                        "data": {"type": "content_block_stop", "index": 0},
+                    }
+                )
                 state["text_open"] = False
-            events.append({"event": "content_block_start", "data": {
-                "type": "content_block_start", "index": block_index,
-                "content_block": {
-                    "type": "tool_use",
-                    "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
-                    "name": fn.get("name", ""),
-                    "input": {},
-                },
-            }})
+            events.append(
+                {
+                    "event": "content_block_start",
+                    "data": {
+                        "type": "content_block_start",
+                        "index": block_index,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
+                            "name": fn.get("name", ""),
+                            "input": {},
+                        },
+                    },
+                }
+            )
             state["open_tools"].add(block_index)
         args = fn.get("arguments")
         if args:
-            events.append({"event": "content_block_delta", "data": {
-                "type": "content_block_delta", "index": block_index,
-                "delta": {"type": "input_json_delta", "partial_json": args},
-            }})
+            events.append(
+                {
+                    "event": "content_block_delta",
+                    "data": {
+                        "type": "content_block_delta",
+                        "index": block_index,
+                        "delta": {"type": "input_json_delta", "partial_json": args},
+                    },
+                }
+            )
         return events
 
     @staticmethod
-    def _closing(finish: str | None, usage: dict | None,
-                 state: dict | None = None) -> list[dict]:
+    def _closing(
+        finish: str | None, usage: dict | None, state: dict | None = None
+    ) -> list[dict]:
         events: list[dict] = []
         # 先合上还开着的块：文本块 + 所有工具块（顺序无关，index 自带）
         if state is not None:
             if state.get("text_open"):
-                events.append({"event": "content_block_stop", "data": {
-                    "type": "content_block_stop", "index": 0}})
+                events.append(
+                    {
+                        "event": "content_block_stop",
+                        "data": {"type": "content_block_stop", "index": 0},
+                    }
+                )
                 state["text_open"] = False
             for block_index in sorted(state.get("open_tools") or ()):
-                events.append({"event": "content_block_stop", "data": {
-                    "type": "content_block_stop", "index": block_index}})
+                events.append(
+                    {
+                        "event": "content_block_stop",
+                        "data": {"type": "content_block_stop", "index": block_index},
+                    }
+                )
             (state.get("open_tools") or set()).clear()
-        events.append({"event": "message_delta", "data": {
-            "type": "message_delta",
-            "delta": {
-                "stop_reason": _FINISH_MAP.get(finish or "stop", "end_turn"),
-                "stop_sequence": None,
-            },
-            "usage": {"output_tokens": (usage or {}).get("completion_tokens", 0)},
-        }})
+        events.append(
+            {
+                "event": "message_delta",
+                "data": {
+                    "type": "message_delta",
+                    "delta": {
+                        "stop_reason": _FINISH_MAP.get(finish or "stop", "end_turn"),
+                        "stop_sequence": None,
+                    },
+                    "usage": {
+                        "output_tokens": (usage or {}).get("completion_tokens", 0)
+                    },
+                },
+            }
+        )
         events.append({"event": "message_stop", "data": {"type": "message_stop"}})
         return events
 

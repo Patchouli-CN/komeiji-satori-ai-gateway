@@ -40,20 +40,18 @@ def _third_party_noise_filter(record) -> bool:
 # 移除默认配置
 logger.remove()
 
-# 保存 handler IDs 以便后续管理
 _handlers: dict[str, int | None] = {"console": None, "file": None}
 
 
 class LoguruHandler(std_logging.Handler):
     def emit(self, record: std_logging.LogRecord):
-        # 抑制 httpcore/asyncio/aiohttp.access 等库的 DEBUG/INFO 日志
         if (
             record.name.split(".")[0] in _SUPPRESSED_LOW_LEVEL_LOGGERS
             and record.levelno < std_logging.WARNING
         ):
             return
 
-        # 关闭 uvicorn 关闭级联噪音
+        # uvicorn 关停时的 KeyboardInterrupt/CancelledError 级联 traceback 不转发
         if record.name.split(".")[0] == "uvicorn":
             exc_type = record.exc_info[0] if record.exc_info else None
             if exc_type is not None and issubclass(
@@ -62,7 +60,8 @@ class LoguruHandler(std_logging.Handler):
                 return
             message = record.getMessage()
             if message.startswith("Traceback") and (
-                "KeyboardInterrupt" in message or "asyncio.exceptions.CancelledError" in message
+                "KeyboardInterrupt" in message
+                or "asyncio.exceptions.CancelledError" in message
             ):
                 return
 
@@ -77,7 +76,9 @@ class LoguruHandler(std_logging.Handler):
                 level = record.levelno
 
         frame, depth = inspect.currentframe(), 0
-        while frame and (depth == 0 or frame.f_code.co_filename == std_logging.__file__):
+        while frame and (
+            depth == 0 or frame.f_code.co_filename == std_logging.__file__
+        ):
             frame = frame.f_back
             depth += 1
 
@@ -93,29 +94,13 @@ class LoguruHandler(std_logging.Handler):
 
 
 class LoggerManager:
-    """模块级 Logger 管理器
-
-    通过 bind(module=...) 为每个模块创建带前缀的 logger，
-    内部缓存已创建的实例，避免重复 bind。
-    """
+    """带模块前缀的 logger 工厂：bind(module=...) 结果按名缓存，避免重复 bind。"""
 
     _cache: dict[str, loguru.Logger] = {}
 
     @staticmethod
     def get_logger(module_name: str):
-        """获取带模块前缀的 logger
-
-        Args:
-            module_name: 模块名称，如 "BRAIN", "SECURITY", "PAYMENT"
-
-        Returns:
-            绑定了 module 字段的 loguru logger 实例
-
-        Example:
-            >>> brain = LoggerManager.get_logger("BRAIN")
-            >>> brain.critical("service cannot start, exit")
-            [ MainThread  ] | 22:47:15 | BRAIN            | CRITICAL | service cannot start, exit
-        """
+        """返回绑定了 module 字段的 loguru logger（同名返回缓存实例）。"""
         if module_name not in LoggerManager._cache:
             LoggerManager._cache[module_name] = logger.bind(module=module_name)
         return LoggerManager._cache[module_name]
@@ -129,22 +114,12 @@ def setup_logging(
     log_format_console: str | None = None,
     intercept_standard_logging: bool = True,
 ) -> None:
-    """配置日志系统
-
-    Args:
-        log_level: 日志级别 (TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        log_console: 是否输出到控制台
-        log_file: 日志文件路径
-        log_format: 文件日志格式
-        log_format_console: 控制台日志格式
-        intercept_standard_logging: 是否拦截标准 logging 库的日志
-    """
+    """配置日志系统：loguru 控制台/文件双 sink，并把标准 logging 桥接进来。"""
     global _handlers
 
     # extra[module] 默认值：未经 bind 的 loguru 直接调用也不会缺键
     logger.configure(extra={"module": "SATORI"})
 
-    # 移除现有 handlers
     if _handlers["console"] is not None:
         with contextlib.suppress(ValueError):
             logger.remove(_handlers["console"])
@@ -154,11 +129,8 @@ def setup_logging(
             logger.remove(_handlers["file"])
         _handlers["file"] = None
 
-    # 默认格式 —— 带模块前缀
     if log_format is None:
-        log_format = (
-            "[ {thread.name:^12} ] | {time:HH:mm:ss} | {extra[module]:<16} | {level:<8} | {message}"
-        )
+        log_format = "[ {thread.name:^12} ] | {time:HH:mm:ss} | {extra[module]:<16} | {level:<8} | {message}"
 
     if log_format_console is None:
         log_format_console = (
@@ -168,7 +140,6 @@ def setup_logging(
             "</level>"
         )
 
-    # 添加控制台 handler
     if log_console:
         _handlers["console"] = logger.add(
             sys.stderr,
@@ -178,7 +149,6 @@ def setup_logging(
             filter=_third_party_noise_filter,
         )
 
-    # 添加文件 handler
     if log_file is not None:
         log_file = Path(log_file)
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -195,7 +165,6 @@ def setup_logging(
             filter=_third_party_noise_filter,
         )
 
-    # 拦截标准 logging
     if intercept_standard_logging:
         root_logger = std_logging.getLogger()
         for handler in root_logger.handlers[:]:
@@ -204,44 +173,9 @@ def setup_logging(
         root_logger.setLevel(std_logging.DEBUG)
 
 
-# 为了兼容性，保留原有的 logger 导出
 __all__ = [
     "logger",
     "setup_logging",
     "LoguruHandler",
     "LoggerManager",
 ]
-
-
-# 测试代码
-if __name__ == "__main__":
-    print("=" * 60)
-    print("测试 1: 模块级 Logger")
-    print("=" * 60)
-
-    setup_logging(log_level="TRACE", log_console=True)
-
-    brain = LoggerManager.get_logger("BRAIN")
-    security = LoggerManager.get_logger("SECURITY")
-    payment = LoggerManager.get_logger("PAYMENT")
-
-    brain.trace("initializing neural network")
-    brain.debug("loading model weights")
-    security.info("user login success")
-    payment.warning("payment retry, attempt=2")
-    brain.error("model inference failed")
-    brain.critical("service cannot start, exit")
-
-    print("\n" + "=" * 60)
-    print("测试 2: 缓存验证（同一模块返回同一实例）")
-    print("=" * 60)
-
-    brain2 = LoggerManager.get_logger("BRAIN")
-    print(f"brain is brain2: {brain is brain2}")  # True
-
-    print("\n" + "=" * 60)
-    print("测试 3: 标准 logging 桥接")
-    print("=" * 60)
-
-    std_logging.info("这是标准 logging 的 INFO 日志")
-    std_logging.warning("这是标准 logging 的 WARNING 日志")

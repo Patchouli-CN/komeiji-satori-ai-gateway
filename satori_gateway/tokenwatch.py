@@ -19,9 +19,12 @@ class TokenizerWatch:
         alpha: float = 0.1,
     ) -> None:
         self._drift = DriftWatch(
-            "chars/token 比例", "——疑似分词器换人",
-            min_samples=min_samples, tolerance=tolerance,
-            breach_limit=breach_limit, alpha=alpha,
+            "chars/token 比例",
+            "——疑似分词器换人",
+            min_samples=min_samples,
+            tolerance=tolerance,
+            breach_limit=breach_limit,
+            alpha=alpha,
         )
 
     def observe(

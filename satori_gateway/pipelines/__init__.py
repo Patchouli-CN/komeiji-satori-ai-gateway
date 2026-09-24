@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import logging
 import pkgutil
 from dataclasses import dataclass
 from typing import AsyncIterator, Iterable
@@ -29,8 +28,9 @@ from typing import AsyncIterator, Iterable
 import httpx
 
 from ..config import Upstream
+from ..logger import LoggerManager
 
-log = logging.getLogger("satori")
+log = LoggerManager.get_logger("PIPELINES")
 
 
 @dataclass
@@ -153,8 +153,9 @@ def discover_pipelines() -> None:
         importlib.import_module(f"{__name__}.{mod.name}")
     _discovered = True
     log.info(
-        "pipeline 自动发现完成：%d 个上游协议，%d 个格式转换器",
-        len(TransferPipeline._UPSTREAMS), len(TransferPipeline._CONVERTERS),
+        "pipeline 自动发现完成：{} 个上游协议，{} 个格式转换器",
+        len(TransferPipeline._UPSTREAMS),
+        len(TransferPipeline._CONVERTERS),
     )
 
 

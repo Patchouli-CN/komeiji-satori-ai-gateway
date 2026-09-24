@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,10 +37,18 @@ class ReportResult:
 class SatoriReporter:
     """往运行中的 Satori 上报业务测试结果。"""
 
-    def __init__(self, url: str, reporter: str, secret: str = "",
-                 method: str = "hmac", private_key: str = "",
-                 queue_file: str | Path | None = None, timeout: float = 10.0,
-                 upstream: str = "", model: str = "") -> None:
+    def __init__(
+        self,
+        url: str,
+        reporter: str,
+        secret: str = "",
+        method: str = "hmac",
+        private_key: str = "",
+        queue_file: str | Path | None = None,
+        timeout: float = 10.0,
+        upstream: str = "",
+        model: str = "",
+    ) -> None:
         self.url = url
         self.reporter = reporter
         self.secret = secret
@@ -91,10 +98,17 @@ class SatoriReporter:
             raise RuntimeError("hmac 模式需要 SATORI_SECRET")
         return sign_request(self.secret, body)
 
-    def build_payload(self, test_suite: str, test_name: str, status: str,
-                      level: str = "L1", trace_id: str | None = None,
-                      failure_diff: str = "", attempt: int = 1,
-                      max_attempts: int = 1) -> dict:
+    def build_payload(
+        self,
+        test_suite: str,
+        test_name: str,
+        status: str,
+        level: str = "L1",
+        trace_id: str | None = None,
+        failure_diff: str = "",
+        attempt: int = 1,
+        max_attempts: int = 1,
+    ) -> dict:
         return {
             "trace_id": trace_id or f"{test_suite}::{test_name}::{attempt}",
             "test_suite": test_suite,
@@ -118,14 +132,18 @@ class SatoriReporter:
             self._enqueue(report)
             return ReportResult(0, "queued", str(exc))
         try:
-            r = httpx.post(self.url, content=body, headers=headers,
-                           timeout=self.timeout)
+            r = httpx.post(
+                self.url, content=body, headers=headers, timeout=self.timeout
+            )
             if 400 <= r.status_code < 500:
                 # 4xx 是客户端问题（400 校验失败 / 401 凭据吊销）——
                 # 重试永远不会成功，毒丸不入队，直接丢弃并警告
                 detail = r.text[:200]
-                print(f"[satori] 上报被服务端拒绝（{r.status_code}，"
-                      f"不入队补发）：{detail}", file=sys.stderr)
+                print(
+                    f"[satori] 上报被服务端拒绝（{r.status_code}，"
+                    f"不入队补发）：{detail}",
+                    file=sys.stderr,
+                )
                 return ReportResult(r.status_code, "rejected", detail)
             if r.status_code >= 500:
                 detail = r.text[:200]
@@ -136,8 +154,9 @@ class SatoriReporter:
                 payload = r.json()
             except json.JSONDecodeError:
                 pass
-            return ReportResult(r.status_code, payload.get("action", ""),
-                                payload.get("detail", ""))
+            return ReportResult(
+                r.status_code, payload.get("action", ""), payload.get("detail", "")
+            )
         except httpx.HTTPError as exc:
             self._enqueue(report)  # Satori 不可达：不阻塞，排队补发
             return ReportResult(0, "queued", repr(exc))

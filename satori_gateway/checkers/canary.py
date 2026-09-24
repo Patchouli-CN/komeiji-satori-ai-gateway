@@ -29,17 +29,24 @@ class CanaryChecker:
 
         passed, failures = 0, []
         for case in self.cases:
-            data = await chat_once(client, upstream, {
-                "model": model,
-                "messages": [{"role": "user", "content": case.prompt}],
-                "max_tokens": 64,
-                "temperature": 0,
-            }, timeout=60)
+            data = await chat_once(
+                client,
+                upstream,
+                {
+                    "model": model,
+                    "messages": [{"role": "user", "content": case.prompt}],
+                    "max_tokens": 64,
+                    "temperature": 0,
+                },
+                timeout=60,
+            )
             content = data["choices"][0]["message"]["content"] or ""
             if case.expect.lower() in content.lower():
                 passed += 1
             else:
-                failures.append(f"{case.prompt!r} 期望含 {case.expect!r}，实际 {content[:80]!r}")
+                failures.append(
+                    f"{case.prompt!r} 期望含 {case.expect!r}，实际 {content[:80]!r}"
+                )
 
         score = passed / len(self.cases)
         detail = f"{passed}/{len(self.cases)} 通过"

@@ -23,7 +23,6 @@ BaselineExpiredError，也不需要内存卸载仪式；本模块负责归档留
 from __future__ import annotations
 
 import json
-import logging
 import shutil
 import time
 from dataclasses import dataclass
@@ -33,25 +32,25 @@ from pathlib import Path
 from .checkers.answerprint import answers_path
 from .checkers.fingerprint import reference_path
 from .config import FingerprintConfig, Upstream
+from .logger import LoggerManager
 from .state import StateStore
 
-log = logging.getLogger("satori")
+log = LoggerManager.get_logger("BASELINE")
 
 # Phase 0 溯源权重（sidecar 缺失的存量参考一律按 secondhand 处理）
 W_SOURCE = {"official": 1.0, "secondhand": 0.5, "community": 0.3}
 # Phase 0 压力权重
 W_PRESSURE = {"LOW": 1.0, "MID": 1.0, "HIGH": 0.6, "EXTR": 0.0}
 
-GAMMA = 1.5                      # 衰减指数：前期稳定，末期陡降
-DEFAULT_TTL_DAYS = 30.0          # Phase 2 动态 TTL 落地前的保质期
+GAMMA = 1.5  # 衰减指数：前期稳定，末期陡降
+DEFAULT_TTL_DAYS = 30.0  # Phase 2 动态 TTL 落地前的保质期
 TRUST_STRICT = 0.8
 TRUST_STANDARD = 0.4
 TRUST_BASIC = 0.1
 
 # 身份类核验通道的满额记账权重（v4 Phase 5A 维度隔离的另一半）。
-# 单一事实源在这——app.py 只消费，不再 duplicated
-IDENTITY_CHECKER_WEIGHTS: dict[str, float] = {"fingerprint": 20.0,
-                                              "answerprint": 10.0}
+# 单一事实源在这——app.py 只存别名（既有测试引用），逻辑一律读这里
+IDENTITY_CHECKER_WEIGHTS: dict[str, float] = {"fingerprint": 20.0, "answerprint": 10.0}
 # STANDARD 档位的折损系数：基线老化/来源降权时，身份通道只配半额信任
 STANDARD_WEIGHT_FACTOR = 0.5
 
@@ -70,8 +69,9 @@ def level_for(trust: float) -> BaselineLevel:
     return BaselineLevel.BASIC
 
 
-def trust_score(source_w: float, pressure_w: float,
-                age_days: float, ttl_days: float) -> float:
+def trust_score(
+    source_w: float, pressure_w: float, age_days: float, ttl_days: float
+) -> float:
     """W_source × W_pressure × max(0, 1 - age/TTL)^γ，钳制在 [0, 1]。
 
     age 为负（collected_at 在未来，比如时钟回拨/导入异地基线）时
@@ -80,7 +80,7 @@ def trust_score(source_w: float, pressure_w: float,
     if ttl_days <= 0:
         return 0.0
     decay = max(0.0, 1.0 - age_days / ttl_days)
-    return min(1.0, max(0.0, source_w * pressure_w * (decay ** GAMMA)))
+    return min(1.0, max(0.0, source_w * pressure_w * (decay**GAMMA)))
 
 
 @dataclass
@@ -99,11 +99,16 @@ class BaselineState:
 
     def to_dict(self) -> dict:
         return {
-            "upstream": self.upstream, "model": self.model,
-            "level": self.level.value, "trust": round(self.trust, 4),
-            "source": self.source, "pressure": self.pressure,
-            "collected_at": self.collected_at, "ttl_days": self.ttl_days,
-            "expired": self.expired, "retired_at": self.retired_at,
+            "upstream": self.upstream,
+            "model": self.model,
+            "level": self.level.value,
+            "trust": round(self.trust, 4),
+            "source": self.source,
+            "pressure": self.pressure,
+            "collected_at": self.collected_at,
+            "ttl_days": self.ttl_days,
+            "expired": self.expired,
+            "retired_at": self.retired_at,
             "reference": self.reference,
         }
 
@@ -125,10 +130,14 @@ class BaselineState:
 class BaselineManager:
     """每个 (upstream, model) 一本基线账：可信度、判别等级、退役归档。"""
 
-    def __init__(self, fingerprint_cfg: FingerprintConfig,
-                 upstreams: list[Upstream], archive_dir: Path,
-                 state: StateStore,
-                 ttl_engine=None) -> None:
+    def __init__(
+        self,
+        fingerprint_cfg: FingerprintConfig,
+        upstreams: list[Upstream],
+        archive_dir: Path,
+        state: StateStore,
+        ttl_engine=None,
+    ) -> None:
         self.fingerprint_cfg = fingerprint_cfg
         self.upstreams = {u.name: u for u in upstreams}
         self.archive_dir = archive_dir
@@ -162,9 +171,11 @@ class BaselineManager:
                     data = json.loads(meta.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, OSError):
                     data = {}
-                return (str(data.get("source", "secondhand")),
-                        str(data.get("pressure_level", "MID")),
-                        data.get("collected_at", ref.stat().st_mtime))
+                return (
+                    str(data.get("source", "secondhand")),
+                    str(data.get("pressure_level", "MID")),
+                    data.get("collected_at", ref.stat().st_mtime),
+                )
             return "secondhand", "MID", ref.stat().st_mtime
         return "secondhand", "MID", None
 
@@ -184,15 +195,26 @@ class BaselineManager:
         source, pressure, collected_at = self._provenance(key)
         fp_path, ans_path = self._reference_paths(key)
         refs = [p for p in (fp_path, ans_path) if p.exists()]
-        ttl_days = (self.ttl_engine.ttl_for(upstream, model)[0]
-                    if self.ttl_engine is not None else DEFAULT_TTL_DAYS)
+        ttl_days = (
+            self.ttl_engine.ttl_for(upstream, model)[0]
+            if self.ttl_engine is not None
+            else DEFAULT_TTL_DAYS
+        )
         st = BaselineState(
-            upstream=upstream, model=model,
-            source=source, pressure=pressure, collected_at=collected_at,
+            upstream=upstream,
+            model=model,
+            source=source,
+            pressure=pressure,
+            collected_at=collected_at,
             ttl_days=ttl_days,
             # 按实际存在的文件标注：answers-only 基线不是 fingerprint
-            reference=("fingerprint" if fp_path.exists()
-                       else "answers" if ans_path.exists() else None),
+            reference=(
+                "fingerprint"
+                if fp_path.exists()
+                else "answers"
+                if ans_path.exists()
+                else None
+            ),
         )
         retired_at = self._archive_meta(key).get("retired_at")
         if retired_at and refs:
@@ -209,9 +231,12 @@ class BaselineManager:
             st.trust = 0.0
         else:
             age_days = (time.time() - (collected_at or time.time())) / 86400
-            st.trust = trust_score(W_SOURCE.get(source, 0.5),
-                                   W_PRESSURE.get(pressure, 1.0),
-                                   age_days, st.ttl_days)
+            st.trust = trust_score(
+                W_SOURCE.get(source, 0.5),
+                W_PRESSURE.get(pressure, 1.0),
+                age_days,
+                st.ttl_days,
+            )
             st.level = level_for(st.trust)
             st.expired = st.trust < TRUST_BASIC
         self.states[key] = st
@@ -227,8 +252,14 @@ class BaselineManager:
 
     # ---- 退役 ----
 
-    def retire(self, upstream: str, model: str, reason: str,
-               reporter: str, last_js: float | None = None) -> BaselineState:
+    def retire(
+        self,
+        upstream: str,
+        model: str,
+        reason: str,
+        reporter: str,
+        last_js: float | None = None,
+    ) -> BaselineState:
         """归档参考 + 留痕 + 记事件。返回退役后的状态（必然 BASIC）。"""
         key = (upstream, model)
         source, _, _ = self._provenance(key)  # 先取来源，搬家就取不到了
@@ -243,18 +274,33 @@ class BaselineManager:
                 if sidecar.exists():
                     shutil.move(str(sidecar), str(arch / sidecar.name))
         meta = {
-            "retired_at": time.time(), "reason": reason, "reporter": reporter,
-            "moved": moved, "last_js": last_js, "source": source,
+            "retired_at": time.time(),
+            "reason": reason,
+            "reporter": reporter,
+            "moved": moved,
+            "last_js": last_js,
+            "source": source,
         }
         (arch / "meta.json").write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        self.state.append_baseline_event({
-            "ts": meta["retired_at"], "upstream": upstream, "model": model,
-            "event": "retired", "reason": reason, "reporter": reporter,
-            "source": source if moved else "none",
-        })
-        log.warning("[baseline] %s/%s 基线已退役归档（reason=%s）——BASIC 模式，"
-                    "仅黑盒通道在岗", upstream, model, reason)
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        self.state.append_baseline_event(
+            {
+                "ts": meta["retired_at"],
+                "upstream": upstream,
+                "model": model,
+                "event": "retired",
+                "reason": reason,
+                "reporter": reporter,
+                "source": source if moved else "none",
+            }
+        )
+        log.warning(
+            "[baseline] {}/{} 基线已退役归档（reason={}）——BASIC 模式，仅黑盒通道在岗",
+            upstream,
+            model,
+            reason,
+        )
         st = self.recompute(upstream, model)
         st.retired_at = meta["retired_at"]
         return st
@@ -263,16 +309,19 @@ class BaselineManager:
 
     def is_cold_start(self, upstream: str, model: str) -> bool:
         """该 上游×模型 的有效基线事件 < 3 条即冷启动期。"""
-        return len(self.state.read_baseline_events(
-            model=model, upstream=upstream)) < 3
+        return len(self.state.read_baseline_events(model=model, upstream=upstream)) < 3
 
-    def official_update_confirms(self, upstream: str, model: str,
-                                 since: float | None) -> int:
+    def official_update_confirms(
+        self, upstream: str, model: str, since: float | None
+    ) -> int:
         since = since or 0.0
         return sum(
-            1 for r in self.state.read_feedback()
-            if r.get("upstream") == upstream and r.get("model") == model
-            and r.get("reason") == "official_update" and r.get("confirm")
+            1
+            for r in self.state.read_feedback()
+            if r.get("upstream") == upstream
+            and r.get("model") == model
+            and r.get("reason") == "official_update"
+            and r.get("confirm")
             # 重放去重拦下的 confirm 留痕但不计数——不然刷计数照样能退役
             and r.get("action") != "confirm-deduped"
             and r.get("ts", 0) > since
@@ -283,9 +332,10 @@ class BaselineManager:
         out = []
         for (up, model), st in sorted(self.states.items()):
             if st.retired_at is not None:
-                out.append(f"Baseline expired for {model} "
-                           f"(retired at {st.retired_at:.0f}). Running in BASIC mode.")
+                out.append(
+                    f"Baseline expired for {model} "
+                    f"(retired at {st.retired_at:.0f}). Running in BASIC mode."
+                )
             elif st.reference is None:
-                out.append(f"No baseline collected for {model}. "
-                           f"Running in BASIC mode.")
+                out.append(f"No baseline collected for {model}. Running in BASIC mode.")
         return out

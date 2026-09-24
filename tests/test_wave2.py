@@ -14,23 +14,16 @@ import time
 from datetime import datetime, timezone
 
 import pytest
-from fastapi.testclient import TestClient
 
-from satori_gateway.app import KomeijiSatori
 from satori_gateway.checkers import CheckResult
-from satori_gateway.config import (
-    GatewayConfig,
-    SecurityConfig,
-    StateConfig,
-    TestingConfig,
-)
 from satori_gateway.security import H_ADMIN
 from satori_gateway.testing import LEVEL_SPEC, TestAdjudicator, TestReport
 
-from test_phase1 import ADMIN, KEY, build, env, issue, write_refs
+from test_phase1 import ADMIN, KEY, build, env, issue, write_refs  # noqa: F401  （pytest fixture 注入用）
 
 
 # ---- Phase 0.2 压力感知 ----
+
 
 class TestProviderPressure:
     # 2026-01-15 是 PST（UTC-8）：UTC 11:00 = PT 03:00（黄金窗口）
@@ -42,6 +35,7 @@ class TestProviderPressure:
 
     def test_levels_by_vendor_local_time(self):
         from satori_gateway.pressure import ProviderPressure
+
         p = ProviderPressure("openai")  # America/Los_Angeles
         assert p.level_at(self.UTC_0300_PT) == "LOW"
         assert p.level_at(self.UTC_1000_PT) == "HIGH"
@@ -49,6 +43,7 @@ class TestProviderPressure:
 
     def test_deepseek_uses_cst(self):
         from satori_gateway.pressure import ProviderPressure
+
         p = ProviderPressure("deepseek")  # Asia/Shanghai
         # UTC 11:00 = 北京 19:00 → MID
         assert p.level_at(self.UTC_0300_PT) == "MID"
@@ -58,19 +53,23 @@ class TestProviderPressure:
 
     def test_pressure_weights(self):
         from satori_gateway.pressure import PRESSURE_WEIGHT
-        assert PRESSURE_WEIGHT == {"LOW": 1.0, "MID": 1.0,
-                                   "HIGH": 0.6, "EXTR": 0.0}
+
+        assert PRESSURE_WEIGHT == {"LOW": 1.0, "MID": 1.0, "HIGH": 0.6, "EXTR": 0.0}
 
     def test_unknown_vendor_falls_back_to_utc(self):
         from satori_gateway.pressure import ProviderPressure
+
         p = ProviderPressure("some-unknown-vendor")
         assert p.tz_name == "UTC"
         # UTC 03:00 对 UTC 模式 = LOW
-        assert p.level_at(datetime(2026, 1, 15, 3, 0,
-                                   tzinfo=timezone.utc).timestamp()) == "LOW"
+        assert (
+            p.level_at(datetime(2026, 1, 15, 3, 0, tzinfo=timezone.utc).timestamp())
+            == "LOW"
+        )
 
     def test_next_golden_window_is_golden(self):
         from satori_gateway.pressure import ProviderPressure
+
         p = ProviderPressure("openai")
         target = p.next_golden_window(self.UTC_1000_PT)
         assert target > self.UTC_1000_PT
@@ -80,6 +79,7 @@ class TestProviderPressure:
 
     def test_describe_contains_weight(self):
         from satori_gateway.pressure import ProviderPressure
+
         text = ProviderPressure("openai").describe(self.UTC_1000_PT)
         assert "Current pressure: HIGH" in text
         assert "Weight: 0.6" in text
@@ -87,21 +87,29 @@ class TestProviderPressure:
 
 # ---- Phase 0.1 溯源 sidecar ----
 
+
 class TestProvenance:
     def test_sidecar_path_naming(self):
         from pathlib import Path
 
         from satori_gateway.provenance import sidecar_path
+
         ref = Path("fingerprints/openai--gpt-4o.json")
         assert sidecar_path(ref).name == "openai--gpt-4o.meta.json"
 
     def test_write_and_read_roundtrip(self, tmp_path):
         from satori_gateway.provenance import read_sidecar, write_sidecar
+
         ref = tmp_path / "openai--gpt-4o.json"
         ref.write_text("{}", encoding="utf-8")
-        write_sidecar(ref, source="official", pressure_level="LOW",
-                      notes="官方直采", prompt="The capital of France is",
-                      vendor="openai")
+        write_sidecar(
+            ref,
+            source="official",
+            pressure_level="LOW",
+            notes="官方直采",
+            prompt="The capital of France is",
+            vendor="openai",
+        )
         meta = read_sidecar(ref)
         assert meta["source"] == "official"
         assert meta["pressure_level"] == "LOW"
@@ -112,10 +120,12 @@ class TestProvenance:
 
     def test_missing_sidecar_reads_empty(self, tmp_path):
         from satori_gateway.provenance import read_sidecar
+
         assert read_sidecar(tmp_path / "nope.json") == {}
 
     def test_default_pressure_when_vendor_unknown(self, tmp_path):
         from satori_gateway.provenance import read_sidecar, write_sidecar
+
         ref = tmp_path / "x.json"
         ref.write_text("{}", encoding="utf-8")
         write_sidecar(ref, source="secondhand", vendor=" ghost ")
@@ -131,6 +141,7 @@ class TestProvenance:
 
         up = satori.config.upstreams[0]
         from satori_gateway.checkers.fingerprint import reference_path
+
         ref = reference_path(satori.config.fingerprint, up, "gpt-4o")
         ref.parent.mkdir(parents=True, exist_ok=True)
         ref.write_text(json.dumps({"The": 0.9}), encoding="utf-8")
@@ -140,8 +151,13 @@ class TestProvenance:
         assert st.trust == pytest.approx(1.0, abs=1e-6)
 
         # 同一份参考改判 secondhand + HIGH：trust 应显著下降
-        write_sidecar(ref, source="secondhand", pressure_level="HIGH",
-                      collected_at=meta_now(), vendor="openai")
+        write_sidecar(
+            ref,
+            source="secondhand",
+            pressure_level="HIGH",
+            collected_at=meta_now(),
+            vendor="openai",
+        )
         st2 = satori.baselines.recompute(*KEY)
         assert st2.source == "secondhand" and st2.pressure == "HIGH"
         expected = trust_score(0.5, PRESSURE_WEIGHT["HIGH"], 0.0, 30.0)
@@ -154,10 +170,20 @@ def meta_now() -> float:
 
 # ---- Phase 5A 裁决引擎（单元） ----
 
+
 def make_report(**kw) -> TestReport:
-    base = dict(trace_id="t1", test_suite="core", test_name="test_add",
-                level="L0", status="fail", attempt=1, max_attempts=1,
-                failure_diff="", model_claimed="gpt-4o", upstream="openai")
+    base = dict(
+        trace_id="t1",
+        test_suite="core",
+        test_name="test_add",
+        level="L0",
+        status="fail",
+        attempt=1,
+        max_attempts=1,
+        failure_diff="",
+        model_claimed="gpt-4o",
+        upstream="openai",
+    )
     base.update(kw)
     return TestReport(**base)
 
@@ -220,8 +246,11 @@ class TestAdjudicatorUnit:
         adj = TestAdjudicator()
         # 20 个样本、3 次失败（15% > 5%）→ unreliable
         decisions = [
-            adj.decide(make_report(trace_id=f"f{i}",
-                                   status="fail" if i in (2, 7, 13) else "pass"))
+            adj.decide(
+                make_report(
+                    trace_id=f"f{i}", status="fail" if i in (2, 7, 13) else "pass"
+                )
+            )
             for i in range(20)
         ]
         assert decisions[-1].action == "unreliable"
@@ -233,6 +262,7 @@ class TestAdjudicatorUnit:
 
     def test_persistence_rebuilds_state(self, tmp_path):
         from satori_gateway.state import StateStore
+
         state = StateStore(tmp_path / "state")
         adj = TestAdjudicator(state)
         adj.decide(make_report(trace_id="p1"))
@@ -247,18 +277,56 @@ class TestAdjudicatorUnit:
     def test_validation_errors(self):
         bad_cases = [
             ({}, "trace_id"),
-            ({"trace_id": "t", "test_suite": "s", "test_name": "n",
-              "upstream": "u", "model_claimed": "m", "level": "L9"}, "level"),
-            ({"trace_id": "t", "test_suite": "s", "test_name": "n",
-              "upstream": "u", "model_claimed": "m", "level": "L0",
-              "status": "maybe"}, "status"),
-            ({"trace_id": "t", "test_suite": "s", "test_name": "n",
-              "upstream": "u", "model_claimed": "m", "level": "L0",
-              "status": "pass", "attempt": 0}, "attempt"),
+            (
+                {
+                    "trace_id": "t",
+                    "test_suite": "s",
+                    "test_name": "n",
+                    "upstream": "u",
+                    "model_claimed": "m",
+                    "level": "L9",
+                },
+                "level",
+            ),
+            (
+                {
+                    "trace_id": "t",
+                    "test_suite": "s",
+                    "test_name": "n",
+                    "upstream": "u",
+                    "model_claimed": "m",
+                    "level": "L0",
+                    "status": "maybe",
+                },
+                "status",
+            ),
+            (
+                {
+                    "trace_id": "t",
+                    "test_suite": "s",
+                    "test_name": "n",
+                    "upstream": "u",
+                    "model_claimed": "m",
+                    "level": "L0",
+                    "status": "pass",
+                    "attempt": 0,
+                },
+                "attempt",
+            ),
             # ts 非法值与其他字段一样走中文 400 文案，不是 500
-            ({"trace_id": "t", "test_suite": "s", "test_name": "n",
-              "upstream": "u", "model_claimed": "m", "level": "L0",
-              "status": "pass", "ts": "abc"}, "ts"),
+            (
+                {
+                    "trace_id": "t",
+                    "test_suite": "s",
+                    "test_name": "n",
+                    "upstream": "u",
+                    "model_claimed": "m",
+                    "level": "L0",
+                    "status": "pass",
+                    "ts": "abc",
+                },
+                "ts",
+            ),
         ]
         for payload, fragment in bad_cases:
             report, err = TestReport.from_payload(payload)
@@ -267,11 +335,17 @@ class TestAdjudicatorUnit:
 
 # ---- Phase 5A 端点 + 两轴 + 账本拆分 ----
 
+
 def post_report(client, secret, reporter, body, ts=None):
     raw = json.dumps(body, ensure_ascii=False).encode()
-    return client.post("/satori/test/report", content=raw, headers={
-        "X-Satori-Reporter": reporter, **sign(secret, raw, ts),
-    })
+    return client.post(
+        "/satori/test/report",
+        content=raw,
+        headers={
+            "X-Satori-Reporter": reporter,
+            **sign(secret, raw, ts),
+        },
+    )
 
 
 def sign(secret: str, raw: bytes, ts: int | None = None) -> dict[str, str]:
@@ -279,15 +353,23 @@ def sign(secret: str, raw: bytes, ts: int | None = None) -> dict[str, str]:
     import hmac as _hmac
 
     from satori_gateway.security import H_TIMESTAMP, H_SIGNATURE
+
     ts = ts if ts is not None else int(time.time())
-    sig = _hmac.new(secret.encode(), f"{ts}.".encode() + raw,
-                    hashlib.sha256).hexdigest()
+    sig = _hmac.new(
+        secret.encode(), f"{ts}.".encode() + raw, hashlib.sha256
+    ).hexdigest()
     return {H_TIMESTAMP: str(ts), H_SIGNATURE: sig}
 
 
-REPORT_BODY = {"trace_id": "tr-1", "test_suite": "core",
-               "test_name": "test_add", "level": "L0", "status": "fail",
-               "upstream": "openai", "model_claimed": "gpt-4o"}
+REPORT_BODY = {
+    "trace_id": "tr-1",
+    "test_suite": "core",
+    "test_name": "test_add",
+    "level": "L0",
+    "status": "fail",
+    "upstream": "openai",
+    "model_claimed": "gpt-4o",
+}
 
 
 class TestReportEndpoint:
@@ -306,8 +388,7 @@ class TestReportEndpoint:
     def test_unknown_target_400(self, env):
         _, client = env
         secret = issue(client, "bot", roles=["reporter"], trust="trusted")
-        r = post_report(client, secret, "bot",
-                        {**REPORT_BODY, "upstream": "ghost"})
+        r = post_report(client, secret, "bot", {**REPORT_BODY, "upstream": "ghost"})
         assert r.status_code == 400
 
     def test_three_l0_fails_degrade_and_break(self, env):
@@ -315,8 +396,9 @@ class TestReportEndpoint:
         satori, client = env
         secret = issue(client, "bot", roles=["reporter"], trust="trusted")
         for i in range(3):
-            r = post_report(client, secret, "bot",
-                            {**REPORT_BODY, "trace_id": f"tr-{i}"})
+            r = post_report(
+                client, secret, "bot", {**REPORT_BODY, "trace_id": f"tr-{i}"}
+            )
             assert r.status_code == 200
         assert r.json()["action"] == "fail-trigger"
         # DEGRADED 级：注入分至少够跨过熔断线（分值 15 保底，跨线优先）
@@ -331,8 +413,9 @@ class TestReportEndpoint:
         secret = issue(client, "bot", roles=["reporter"], trust="trusted")
         satori.suspicion[KEY] = 30.0
         satori._ledger_ts[KEY] = time.time()
-        r = post_report(client, secret, "bot",
-                        {**REPORT_BODY, "trace_id": "p1", "status": "pass"})
+        r = post_report(
+            client, secret, "bot", {**REPORT_BODY, "trace_id": "p1", "status": "pass"}
+        )
         assert r.json()["action"] == "pass-decay"
         # L0 的衰减量是 10（不是 L1 的 5）；容许微秒级半衰期误差
         assert satori._decayed_quality(KEY) == pytest.approx(20.0, abs=0.01)
@@ -343,8 +426,9 @@ class TestReportEndpoint:
         secret = issue(client, "bot", roles=["reporter"], trust="normal")
         satori.suspicion[KEY] = 30.0
         satori._ledger_ts[KEY] = time.time()
-        r = post_report(client, secret, "bot",
-                        {**REPORT_BODY, "trace_id": "p1", "status": "pass"})
+        r = post_report(
+            client, secret, "bot", {**REPORT_BODY, "trace_id": "p1", "status": "pass"}
+        )
         assert r.json()["action"] == "recorded"
         assert satori._decayed_quality(KEY) == pytest.approx(30.0, abs=0.01)
 
@@ -368,13 +452,14 @@ class TestReportEndpoint:
         """核心验收：PASS 洗不穿负分地板，更洗不掉身份类嫌疑。"""
         satori, client = env
         secret = issue(client, "bot", roles=["reporter"], trust="trusted")
-        satori.suspicion[KEY] = 6.0          # 质量类 6
+        satori.suspicion[KEY] = 6.0  # 质量类 6
         satori._ledger_ts[KEY] = time.time()
-        satori.identity[KEY] = 20.0          # 身份类 20（声纹对不上）
+        satori.identity[KEY] = 20.0  # 身份类 20（声纹对不上）
         satori._identity_ts[KEY] = time.time()
         # L0 PASS 想衰减 10：6-10 = -4，但身份类 20 > 地板 5 → 质量类归零即可
-        r = post_report(client, secret, "bot",
-                        {**REPORT_BODY, "trace_id": "fp", "status": "pass"})
+        r = post_report(
+            client, secret, "bot", {**REPORT_BODY, "trace_id": "fp", "status": "pass"}
+        )
         assert r.json()["action"] == "pass-decay"
         assert satori._decayed_quality(KEY) == pytest.approx(0.0, abs=0.01)
         assert satori._decayed_identity(KEY) == pytest.approx(20.0, abs=0.01)
@@ -386,8 +471,9 @@ class TestReportEndpoint:
         secret = issue(client, "bot", roles=["reporter"], trust="trusted")
         satori.suspicion[KEY] = 12.0
         satori._ledger_ts[KEY] = time.time()
-        post_report(client, secret, "bot",
-                    {**REPORT_BODY, "trace_id": "fp2", "status": "pass"})
+        post_report(
+            client, secret, "bot", {**REPORT_BODY, "trace_id": "fp2", "status": "pass"}
+        )
         # 12 - 10 = 2 < 地板 5 → 钳到 5
         assert satori._decayed_quality(KEY) == pytest.approx(5.0, abs=0.01)
 
@@ -396,8 +482,7 @@ class TestReportEndpoint:
         satori, client = env
         secret = issue(client, "bot", roles=["reporter"], trust="normal")
         for i in range(3):
-            post_report(client, secret, "bot",
-                        {**REPORT_BODY, "trace_id": f"nb-{i}"})
+            post_report(client, secret, "bot", {**REPORT_BODY, "trace_id": f"nb-{i}"})
         assert KEY not in satori.breakers
 
     def test_status_tests_section(self, env):
@@ -440,15 +525,19 @@ class TestTrustBucketIsolation:
         adj = TestAdjudicator()
         d = None
         for i in range(20):
-            d = adj.decide(make_report(
-                trace_id=f"n{i}",
-                status="fail" if i in (3, 11) else "pass"),
-                trust="normal", reporter_id="mallory")
+            d = adj.decide(
+                make_report(
+                    trace_id=f"n{i}", status="fail" if i in (3, 11) else "pass"
+                ),
+                trust="normal",
+                reporter_id="mallory",
+            )
         assert d.action == "unreliable"  # normal 桶确实被投毒了
         # TRUSTED 桶的同一测试照常裁决：3 连败触发
         actions = [
-            adj.decide(make_report(trace_id=f"t{i}"),
-                       trust="trusted", reporter_id="bot").action
+            adj.decide(
+                make_report(trace_id=f"t{i}"), trust="trusted", reporter_id="bot"
+            ).action
             for i in range(3)
         ]
         assert actions == ["recorded", "recorded", "fail-trigger"]
@@ -462,8 +551,12 @@ class TestTrustBucketIsolation:
         post_report(client, bot, "bot", {**REPORT_BODY, "trace_id": "f2"})
         # 低信任凭据猛刷 PASS（若共窗，9 格滑窗会被洗掉 5 格失败密度）
         for i in range(5):
-            post_report(client, mallory, "mallory",
-                        {**REPORT_BODY, "trace_id": f"p{i}", "status": "pass"})
+            post_report(
+                client,
+                mallory,
+                "mallory",
+                {**REPORT_BODY, "trace_id": f"p{i}", "status": "pass"},
+            )
         r = post_report(client, bot, "bot", {**REPORT_BODY, "trace_id": "f3"})
         assert r.json()["action"] == "fail-trigger"  # TRUSTED 窗仍是 [F,F,F]
         assert r.json()["trigger_breaker"] is True
@@ -471,6 +564,7 @@ class TestTrustBucketIsolation:
     def test_unverified_replay_never_enters_judgement(self, tmp_path):
         """UNVERIFIED 落盘的记录，重启重建时也不进裁决状态。"""
         from satori_gateway.state import StateStore
+
         state = StateStore(tmp_path / "state")
         adj = TestAdjudicator(state)
         adj.record_only(make_report(trace_id="u1"), reporter_id="mallory")
@@ -484,19 +578,24 @@ class TestIdentityCleared:
     def test_operator_clears_identity_only(self, env):
         satori, client = env
         secret = issue(client, "op", roles=["operator"], trust="trusted")
-        satori.suspicion[KEY] = 30.0          # 质量类
+        satori.suspicion[KEY] = 30.0  # 质量类
         satori._ledger_ts[KEY] = time.time()
-        satori.identity[KEY] = 20.0           # 身份类
+        satori.identity[KEY] = 20.0  # 身份类
         satori._identity_ts[KEY] = time.time()
-        body = json.dumps({"upstream": "openai", "model": "gpt-4o",
-                           "reason": "官方确认换模型，误报"}).encode()
-        r = client.post("/satori/baseline/identity-cleared", content=body,
-                        headers={"X-Satori-Reporter": "op",
-                                 **sign(secret, body)})
+        body = json.dumps(
+            {"upstream": "openai", "model": "gpt-4o", "reason": "官方确认换模型，误报"}
+        ).encode()
+        r = client.post(
+            "/satori/baseline/identity-cleared",
+            content=body,
+            headers={"X-Satori-Reporter": "op", **sign(secret, body)},
+        )
         assert r.status_code == 200
         assert r.json()["cleared"] is True
-        assert satori._decayed_identity(KEY) == 0.0     # 身份类解冻
-        assert satori._decayed_quality(KEY) == pytest.approx(30.0, abs=0.01)  # 质量类不动
+        assert satori._decayed_identity(KEY) == 0.0  # 身份类解冻
+        assert satori._decayed_quality(KEY) == pytest.approx(
+            30.0, abs=0.01
+        )  # 质量类不动
 
     def test_reporter_cannot_clear_403(self, env):
         satori, client = env
@@ -504,9 +603,11 @@ class TestIdentityCleared:
         satori.identity[KEY] = 20.0
         satori._identity_ts[KEY] = time.time()
         body = json.dumps({"upstream": "openai", "model": "gpt-4o"}).encode()
-        r = client.post("/satori/baseline/identity-cleared", content=body,
-                        headers={"X-Satori-Reporter": "bob",
-                                 **sign(secret, body)})
+        r = client.post(
+            "/satori/baseline/identity-cleared",
+            content=body,
+            headers={"X-Satori-Reporter": "bob", **sign(secret, body)},
+        )
         assert r.status_code == 403
         assert satori._decayed_identity(KEY) == pytest.approx(20.0, abs=0.01)
 
@@ -514,18 +615,21 @@ class TestIdentityCleared:
         _, client = env
         secret = issue(client, "op", roles=["operator"])
         body = json.dumps({"upstream": "openai", "model": "gpt-4o"}).encode()
-        r = client.post("/satori/baseline/identity-cleared", content=body,
-                        headers={"X-Satori-Reporter": "op",
-                                 **sign(secret, body)})
+        r = client.post(
+            "/satori/baseline/identity-cleared",
+            content=body,
+            headers={"X-Satori-Reporter": "op", **sign(secret, body)},
+        )
         assert r.json()["cleared"] is False
 
     def test_disabled_returns_503(self, tmp_path):
         satori, client = build(tmp_path, testing_enabled=False)
         # 注意：testing 关闭不影响 [security]——admin 端点仍要 admin_secret
-        r = client.post("/satori/admin/credentials",
-                        json={"reporter_id": "bot", "trust_level": "normal",
-                              "roles": ["reporter"]},
-                        headers={H_ADMIN: ADMIN})
+        r = client.post(
+            "/satori/admin/credentials",
+            json={"reporter_id": "bot", "trust_level": "normal", "roles": ["reporter"]},
+            headers={H_ADMIN: ADMIN},
+        )
         assert r.status_code == 201
         secret = r.json()["secret"]
         r = post_report(client, secret, "bot", REPORT_BODY)
@@ -535,32 +639,48 @@ class TestIdentityCleared:
 
 # ---- checker 失败 → 身份账本接线 ----
 
+
 class FakeFingerprint:
     name = "fingerprint"
 
     async def check(self, client, upstream, model):
-        return CheckResult("fingerprint", upstream.name, model, False, 0.5,
-                           "JS 散度 0.5000（阈值 0.15）")
+        return CheckResult(
+            "fingerprint",
+            upstream.name,
+            model,
+            False,
+            0.5,
+            "JS 散度 0.5000（阈值 0.15）",
+        )
 
 
 class FakeNoReference:
     """无参考时的 checker 表现：ok=False 但 score=0——不该入账。"""
+
     name = "fingerprint"
 
     async def check(self, client, upstream, model):
-        return CheckResult("fingerprint", upstream.name, model, False, 0.0,
-                           "无参考指纹，先用 collect 命令采集")
+        return CheckResult(
+            "fingerprint",
+            upstream.name,
+            model,
+            False,
+            0.0,
+            "无参考指纹，先用 collect 命令采集",
+        )
 
 
 class TestIdentityLedgerWiring:
     def test_checker_failure_feeds_identity_ledger(self, tmp_path):
         from satori_gateway.app import _IDENTITY_CHECKERS
+
         satori, _ = build(tmp_path)
         write_refs(satori)  # STRICT 档：身份通道满额在岗（档次动作见 test_tiers）
         satori.checkers = [FakeFingerprint()]
         asyncio.run(satori.run_all_checks(None))
         assert satori._decayed_identity(KEY) == pytest.approx(
-            _IDENTITY_CHECKERS["fingerprint"], abs=0.01)
+            _IDENTITY_CHECKERS["fingerprint"], abs=0.01
+        )
         assert satori._decayed_quality(KEY) == 0.0  # 质量类分文未动
         satori.security.store.close()
 
@@ -572,7 +692,6 @@ class TestIdentityLedgerWiring:
         satori.security.store.close()
 
     def test_identity_survives_persistence(self, tmp_path):
-        from satori_gateway.state import StateStore
         satori, _ = build(tmp_path)
         write_refs(satori)  # STRICT 档，让身份记账走得通
         satori.checkers = [FakeFingerprint()]

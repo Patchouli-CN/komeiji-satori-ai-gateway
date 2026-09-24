@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 import importlib
-import logging
 import pkgutil
 from typing import Protocol, runtime_checkable
 
-log = logging.getLogger("satori")
+from ..logger import LoggerManager
+
+log = LoggerManager.get_logger("ADAPTERS")
 
 
 @runtime_checkable
@@ -56,7 +57,7 @@ def discover_adapters() -> None:
     for mod in pkgutil.iter_modules(__path__):
         importlib.import_module(f"{__name__}.{mod.name}")
     _discovered = True
-    log.info("adapter 自动发现完成：%d 个协议入口", len(_ADAPTERS))
+    log.info("adapter 自动发现完成：{} 个协议入口", len(_ADAPTERS))
 
 
 def get_adapters() -> list[Adapter]:

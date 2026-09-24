@@ -57,7 +57,9 @@ class RuleEngine:
             return ["content", "reasoning"]
         return [rule.field]
 
-    def evaluate(self, content: str, reasoning: str, request: str = "") -> list[RuleHit]:
+    def evaluate(
+        self, content: str, reasoning: str, request: str = ""
+    ) -> list[RuleHit]:
         """对一次请求-响应跑全部规则。
 
         target=response 的规则看响应的正文/CoT；target=request 的规则看用户
@@ -88,10 +90,10 @@ class RuleEngine:
             m = regex.search(text)
             if not m:
                 return None
-            snippet = text[max(0, m.start() - 20):m.end() + 40]
+            snippet = text[max(0, m.start() - 20) : m.end() + 40]
         else:
             idx = text.find(rule.pattern)
             if idx < 0:
                 return None
-            snippet = text[max(0, idx - 20):idx + len(rule.pattern) + 40]
+            snippet = text[max(0, idx - 20) : idx + len(rule.pattern) + 40]
         return RuleHit(rule.name, rule.score, field, snippet.strip(), rule.description)

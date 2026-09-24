@@ -56,7 +56,11 @@ class DriftWatch:
                 st.ema = (1 - self.alpha) * st.ema + self.alpha * value
         else:
             st.breaches = 0
-            st.ema = value if st.samples == 0 else (1 - self.alpha) * st.ema + self.alpha * value
+            st.ema = (
+                value
+                if st.samples == 0
+                else (1 - self.alpha) * st.ema + self.alpha * value
+            )
 
         st.samples += 1
         return alert
@@ -67,8 +71,10 @@ class LatencyWatch:
 
     def __init__(self) -> None:
         self._drift = DriftWatch(
-            "首字节延迟", "——疑似上游链路或模型更换",
-            tolerance=0.5, breach_limit=5,
+            "首字节延迟",
+            "——疑似上游链路或模型更换",
+            tolerance=0.5,
+            breach_limit=5,
         )
 
     def observe(self, upstream: str, model: str, first_byte_ms: float) -> str | None:
@@ -83,7 +89,8 @@ class BillingWatch:
 
     def __init__(self) -> None:
         self._drift = DriftWatch(
-            "chars/completion_token 比例", "——计费 token 虚报或模型更换",
+            "chars/completion_token 比例",
+            "——计费 token 虚报或模型更换",
             tolerance=0.3,
         )
 

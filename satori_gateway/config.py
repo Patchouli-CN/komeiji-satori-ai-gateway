@@ -125,7 +125,8 @@ class SecurityConfig:
     def __post_init__(self) -> None:
         if self.mode not in ("hmac", "ed25519"):
             raise ValueError(
-                f"security.mode 必须是 'hmac' / 'ed25519'，收到 {self.mode!r}")
+                f"security.mode 必须是 'hmac' / 'ed25519'，收到 {self.mode!r}"
+            )
 
 
 @dataclass(frozen=True)

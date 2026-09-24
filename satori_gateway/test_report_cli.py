@@ -39,12 +39,14 @@ def parse_junit(path: str) -> list[dict]:
                 break
             if tag == "skipped":
                 status, detail = "skip", (child.get("message") or "")[:200]
-        out.append({
-            "name": case.get("name", ""),
-            "suite": case.get("classname") or case.get("suite") or "junit",
-            "status": status,
-            "detail": detail,
-        })
+        out.append(
+            {
+                "name": case.get("name", ""),
+                "suite": case.get("classname") or case.get("suite") or "junit",
+                "status": status,
+                "detail": detail,
+            }
+        )
     return out
 
 
@@ -61,7 +63,7 @@ def parse_tap(path: str) -> list[dict]:
             continue
         if line.startswith("ok") or line.startswith("not ok"):
             failed = line.startswith("not ok")
-            rest = line[len("not ok") if failed else len("ok"):].strip()
+            rest = line[len("not ok") if failed else len("ok") :].strip()
             # rest: [编号] [- ]名字  [# SKIP 原因]
             rest = rest.lstrip("0123456789").strip()
             if rest.startswith("- "):
@@ -71,20 +73,28 @@ def parse_tap(path: str) -> list[dict]:
                 rest, _, reason = rest.partition("#")
                 detail = reason.strip()
             name = rest.strip()
-            status = "fail" if failed else (
-                "skip" if "SKIP" in line.upper() else "pass")
+            status = (
+                "fail" if failed else ("skip" if "SKIP" in line.upper() else "pass")
+            )
             if failed and not detail and i < len(lines):
                 # 下一块 YAML 的 message: 行
                 j = i
-                while j < len(lines) and (lines[j].startswith(" ") or
-                                          lines[j].strip().startswith("---")):
+                while j < len(lines) and (
+                    lines[j].startswith(" ") or lines[j].strip().startswith("---")
+                ):
                     stripped = lines[j].strip().lstrip("-").strip()
                     if stripped.startswith("message:"):
-                        detail = stripped[len("message:"):].strip()[:2000]
+                        detail = stripped[len("message:") :].strip()[:2000]
                         break
                     j += 1
-            out.append({"name": name or "(unnamed)", "suite": "tap",
-                        "status": status, "detail": detail})
+            out.append(
+                {
+                    "name": name or "(unnamed)",
+                    "suite": "tap",
+                    "status": status,
+                    "detail": detail,
+                }
+            )
     return out
 
 
@@ -95,21 +105,33 @@ def parse_json(path: str) -> list[dict]:
     out: list[dict] = []
     for c in cases or []:
         status = str(c.get("status", c.get("outcome", ""))).lower()
-        status = ("pass" if status in _PASS else
-                  "skip" if status in _SKIP else
-                  "fail" if status in _FAIL else status)
-        out.append({
-            "name": c.get("name", c.get("test", "(unnamed)")),
-            "suite": c.get("suite", c.get("classname", "json")),
-            "status": status,
-            "detail": str(c.get("detail", c.get("message", "")))[:2000],
-        })
+        status = (
+            "pass"
+            if status in _PASS
+            else "skip"
+            if status in _SKIP
+            else "fail"
+            if status in _FAIL
+            else status
+        )
+        out.append(
+            {
+                "name": c.get("name", c.get("test", "(unnamed)")),
+                "suite": c.get("suite", c.get("classname", "json")),
+                "status": status,
+                "detail": str(c.get("detail", c.get("message", "")))[:2000],
+            }
+        )
     return out
 
 
 def detect_format(path: str) -> str:
     head = open(path, encoding="utf-8", errors="replace").read(2048).lstrip()
-    if head.startswith("<?xml") or head.startswith("<testsuite") or head.startswith("<testsuites"):
+    if (
+        head.startswith("<?xml")
+        or head.startswith("<testsuite")
+        or head.startswith("<testsuites")
+    ):
         return "junit"
     if head.startswith("[") or head.startswith("{"):
         return "json"
@@ -118,11 +140,12 @@ def detect_format(path: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="satori-test-report",
-        description="把测试报告文件上报给 KomeijiSatori")
+        prog="satori-test-report", description="把测试报告文件上报给 KomeijiSatori"
+    )
     parser.add_argument("files", nargs="+", help="报告文件（junit.xml / .tap / .json）")
-    parser.add_argument("--format", choices=["auto", "junit", "tap", "json"],
-                        default="auto")
+    parser.add_argument(
+        "--format", choices=["auto", "junit", "tap", "json"], default="auto"
+    )
     parser.add_argument("--suite", default=None, help="覆盖套件名")
     parser.add_argument("--level", default="L1", help="L0/L1/L2/L3（默认 L1）")
     args = parser.parse_args(argv)
@@ -135,8 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     sent = failed = skipped = 0
     for path in args.files:
         fmt = args.format if args.format != "auto" else detect_format(path)
-        cases = {"junit": parse_junit, "tap": parse_tap,
-                 "json": parse_json}[fmt](path)
+        cases = {"junit": parse_junit, "tap": parse_tap, "json": parse_json}[fmt](path)
         for case in cases:
             if case["status"] == "skip":
                 skipped += 1  # skip 不裁决，也不上报（不会进滑窗）
@@ -153,16 +175,24 @@ def main(argv: list[str] | None = None) -> int:
                 sent += 1
             elif result.action == "rejected":
                 failed += 1  # 4xx 毒丸：丢弃不入队，重试也不会成功
-                print(f"[satori] 上报被拒（{result.status_code}，不入队）："
-                      f"{case['name']} → {result.detail}", file=sys.stderr)
+                print(
+                    f"[satori] 上报被拒（{result.status_code}，不入队）："
+                    f"{case['name']} → {result.detail}",
+                    file=sys.stderr,
+                )
             else:
                 failed += 1
-                print(f"[satori] 上报失败（已入队）：{case['name']} → "
-                      f"{result.status_code} {result.detail}", file=sys.stderr)
+                print(
+                    f"[satori] 上报失败（已入队）：{case['name']} → "
+                    f"{result.status_code} {result.detail}",
+                    file=sys.stderr,
+                )
     flushed = reporter.flush_queue()
     recovered = sum(1 for r in flushed if r.ok)
-    print(f"[satori] 上报 {sent} 条（失败入队 {failed}，skip 跳过 {skipped}，"
-          f"补发历史 {recovered}/{len(flushed)}）")
+    print(
+        f"[satori] 上报 {sent} 条（失败入队 {failed}，skip 跳过 {skipped}，"
+        f"补发历史 {recovered}/{len(flushed)}）"
+    )
     # CI 不该因为观测系统挂了而红：入队即视为已交付（容错验证）
     return 0
 

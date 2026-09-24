@@ -8,25 +8,55 @@ from satori_gateway.record import replay_tool_traces
 
 
 def _write(path, records):
-    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n"
-                            for r in records), encoding="utf-8")
+    path.write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records),
+        encoding="utf-8",
+    )
 
 
 def test_replay_tool_traces_summary(tmp_path):
     p = tmp_path / "tool_traces.jsonl"
-    _write(p, [
-        {"ts": 1000.0, "upstream": "openai", "model": "gpt-4o",
-         "session": "s1", "trace_id": "t1", "slop_score": 0.0,
-         "first_suspicious": -1,
-         "steps": [{"index": 0, "tool": "get_weather",
-                    "args_valid": True, "args_bytes": 12, "flags": []}]},
-        {"ts": 1001.0, "upstream": "openai", "model": "gpt-4o",
-         "session": "s1", "trace_id": "t2", "slop_score": 30.0,
-         "first_suspicious": 0,
-         "steps": [{"index": 0, "tool": "get_weather",
-                    "args_valid": False, "args_bytes": 8,
-                    "flags": ["broken-args"]}]},
-    ])
+    _write(
+        p,
+        [
+            {
+                "ts": 1000.0,
+                "upstream": "openai",
+                "model": "gpt-4o",
+                "session": "s1",
+                "trace_id": "t1",
+                "slop_score": 0.0,
+                "first_suspicious": -1,
+                "steps": [
+                    {
+                        "index": 0,
+                        "tool": "get_weather",
+                        "args_valid": True,
+                        "args_bytes": 12,
+                        "flags": [],
+                    }
+                ],
+            },
+            {
+                "ts": 1001.0,
+                "upstream": "openai",
+                "model": "gpt-4o",
+                "session": "s1",
+                "trace_id": "t2",
+                "slop_score": 30.0,
+                "first_suspicious": 0,
+                "steps": [
+                    {
+                        "index": 0,
+                        "tool": "get_weather",
+                        "args_valid": False,
+                        "args_bytes": 8,
+                        "flags": ["broken-args"],
+                    }
+                ],
+            },
+        ],
+    )
     report = replay_tool_traces(p)
     assert report.total == 2 and report.suspicious == 1 and report.clean == 1
     origins = report.origins()

@@ -29,9 +29,7 @@ def js_divergence(p: dict[str, float], q: dict[str, float]) -> float:
     m = {k: (p.get(k, _FLOOR) + q.get(k, _FLOOR)) / 2 for k in keys}
 
     def kl(a: dict[str, float], b: dict[str, float]) -> float:
-        return sum(
-            a.get(k, _FLOOR) * math.log(a.get(k, _FLOOR) / b[k]) for k in keys
-        )
+        return sum(a.get(k, _FLOOR) * math.log(a.get(k, _FLOOR) / b[k]) for k in keys)
 
     return (kl(p, m) + kl(q, m)) / 2 / math.log(2)
 
@@ -44,14 +42,18 @@ async def probe(
     prompt: str | None = None,
 ) -> dict[str, float]:
     """向上游请求探针 prompt，返回 {token: prob} 分布。"""
-    data = await chat_once(client, upstream, {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt or cfg.probe_prompt}],
-        "max_tokens": 1,
-        "temperature": 0,
-        "logprobs": True,
-        "top_logprobs": cfg.top_logprobs,
-    })
+    data = await chat_once(
+        client,
+        upstream,
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt or cfg.probe_prompt}],
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": True,
+            "top_logprobs": cfg.top_logprobs,
+        },
+    )
     top = data["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
     return {item["token"]: math.exp(item["logprob"]) for item in top}
 
@@ -82,13 +84,21 @@ class FingerprintChecker:
     ) -> CheckResult:
         if "logprobs" not in build_pipeline(upstream).capabilities:
             return CheckResult(
-                self.name, upstream.name, model, True, 0.0,
+                self.name,
+                upstream.name,
+                model,
+                True,
+                0.0,
                 "上游协议不支持 logprobs，声纹通道跳过",
             )
         ref_file = reference_path(self.cfg, upstream, model)
         if not ref_file.exists():
             return CheckResult(
-                self.name, upstream.name, model, False, 0.0,
+                self.name,
+                upstream.name,
+                model,
+                False,
+                0.0,
                 f"无参考指纹 {ref_file}，先用 collect 命令从可信端点采集",
             )
         reference = json.loads(ref_file.read_text(encoding="utf-8"))

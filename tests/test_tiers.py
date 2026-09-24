@@ -12,7 +12,6 @@ import time
 
 import pytest
 
-from satori_gateway.app import KomeijiSatori
 from satori_gateway.baseline import (
     BaselineLevel,
     BaselineState,
@@ -20,7 +19,7 @@ from satori_gateway.baseline import (
 )
 from satori_gateway.checkers import CheckResult
 
-from test_phase1 import KEY, build, env, write_refs
+from test_phase1 import KEY, env, write_refs  # noqa: F401  （pytest fixture 注入用）
 
 
 class CountingFingerprint:
@@ -33,8 +32,14 @@ class CountingFingerprint:
 
     async def check(self, client, upstream, model):
         self.calls += 1
-        return CheckResult("fingerprint", upstream.name, model, False, 0.5,
-                           "JS 散度 0.5000（阈值 0.15）")
+        return CheckResult(
+            "fingerprint",
+            upstream.name,
+            model,
+            False,
+            0.5,
+            "JS 散度 0.5000（阈值 0.15）",
+        )
 
 
 def _identity_weight_unit():
@@ -83,8 +88,12 @@ class TestTierActions:
     def test_basic_aged_reference_present_stays_silent(self, env):
         """边缘漏洞固化：参考文件还在，但 trust 跌穿 0.4 → BASIC 显式闭嘴。"""
         satori, _ = env
-        write_refs(satori, source="official", pressure="LOW",
-                   collected_at=time.time() - 86400 * 20)  # 20/30 天 → trust≈0.19
+        write_refs(
+            satori,
+            source="official",
+            pressure="LOW",
+            collected_at=time.time() - 86400 * 20,
+        )  # 20/30 天 → trust≈0.19
         satori.baselines.recompute(*KEY)
         st = satori.baselines.get(*KEY)
         assert st.level is BaselineLevel.BASIC and st.reference == "fingerprint"
@@ -98,8 +107,9 @@ class TestTierActions:
         satori, _ = env
         write_refs(satori)
         satori.baselines.recompute(*KEY)
-        satori.baselines.retire("openai", "gpt-4o", reason="official_update",
-                                reporter="op")
+        satori.baselines.retire(
+            "openai", "gpt-4o", reason="official_update", reporter="op"
+        )
         fake = CountingFingerprint()
         satori.checkers = [fake]
         asyncio.run(satori.run_all_checks(None))
@@ -144,8 +154,9 @@ class TestTierActions:
         asyncio.run(satori.run_all_checks(None))
         assert ("fingerprint", "openai", "gpt-4o") in satori.results
         # 退役 → BASIC：第二轮声纹停探，旧结果一并清掉
-        satori.baselines.retire("openai", "gpt-4o", reason="official_update",
-                                reporter="op")
+        satori.baselines.retire(
+            "openai", "gpt-4o", reason="official_update", reporter="op"
+        )
         asyncio.run(satori.run_all_checks(None))
         assert fake.calls == 1  # 第二轮没再探
         assert ("fingerprint", "openai", "gpt-4o") not in satori.results
@@ -153,4 +164,5 @@ class TestTierActions:
     def test_weights_single_source_of_truth(self):
         """app 的别名与 baseline 的常量同源——防止两边岁久走偏。"""
         from satori_gateway.app import _IDENTITY_CHECKERS
+
         assert _IDENTITY_CHECKERS is IDENTITY_CHECKER_WEIGHTS

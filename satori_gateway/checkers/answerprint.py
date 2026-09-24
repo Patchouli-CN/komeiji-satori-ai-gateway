@@ -40,15 +40,23 @@ def answers_path(cfg: FingerprintConfig, upstream: Upstream, model: str) -> Path
 
 
 async def ask(
-    client: httpx.AsyncClient, upstream: Upstream, model: str,
-    prompt: str, max_tokens: int,
+    client: httpx.AsyncClient,
+    upstream: Upstream,
+    model: str,
+    prompt: str,
+    max_tokens: int,
 ) -> str:
-    data = await chat_once(client, upstream, {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-        "temperature": 0,
-    }, timeout=60)
+    data = await chat_once(
+        client,
+        upstream,
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": 0,
+        },
+        timeout=60,
+    )
     return data["choices"][0]["message"].get("content") or ""
 
 
@@ -72,7 +80,9 @@ class AnswerFingerprintChecker:
 
     @classmethod
     def from_config(cls, cfg) -> "AnswerFingerprintChecker | None":
-        return cls(cfg.answerprint, cfg.fingerprint) if cfg.answerprint.enabled else None
+        return (
+            cls(cfg.answerprint, cfg.fingerprint) if cfg.answerprint.enabled else None
+        )
 
     async def check(
         self, client: httpx.AsyncClient, upstream: Upstream, model: str
@@ -80,7 +90,11 @@ class AnswerFingerprintChecker:
         ref_file = answers_path(self.fp_cfg, upstream, model)
         if not ref_file.exists():
             return CheckResult(
-                self.name, upstream.name, model, False, 0.0,
+                self.name,
+                upstream.name,
+                model,
+                False,
+                0.0,
                 f"无参考作答 {ref_file}，先用 satori answers 从可信端点采集",
             )
         reference = json.loads(ref_file.read_text(encoding="utf-8"))

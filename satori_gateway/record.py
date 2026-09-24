@@ -20,8 +20,12 @@ from .tokenwatch import TokenizerWatch
 
 
 def make_entry(
-    upstream: str, model: str, status: int,
-    request_text: str, content: str, reasoning: str,
+    upstream: str,
+    model: str,
+    status: int,
+    request_text: str,
+    content: str,
+    reasoning: str,
     usage: dict | None = None,
 ) -> dict:
     return {
@@ -72,11 +76,14 @@ def replay(path: str | Path, engine: RuleEngine) -> ReplayReport:
         upstream = entry.get("upstream", "?")
         model = entry.get("model", "?")
         hits = engine.evaluate(
-            entry.get("content", ""), entry.get("reasoning", ""),
+            entry.get("content", ""),
+            entry.get("reasoning", ""),
             entry.get("request_text", ""),
         )
         tw_alert = tw.observe(
-            upstream, model, len(entry.get("request_text", "")),
+            upstream,
+            model,
+            len(entry.get("request_text", "")),
             entry.get("usage", {}).get("prompt_tokens", 0),
         )
         if tw_alert:
@@ -102,8 +109,11 @@ class ToolTraceReport:
 
     def origins(self) -> list[dict]:
         """每条可疑链的第一个突变步——回溯定位用。"""
-        return [c for c in self.chains
-                if c.get("slop_score", 0) > 0 and c.get("first_suspicious", -1) >= 0]
+        return [
+            c
+            for c in self.chains
+            if c.get("slop_score", 0) > 0 and c.get("first_suspicious", -1) >= 0
+        ]
 
 
 def replay_tool_traces(path: str | Path) -> ToolTraceReport:
@@ -152,8 +162,12 @@ def ingest_markdown(
             user_block, asst_block = [], []
             return None
         entry = make_entry(
-            upstream, model, 200,
-            "\n".join(user_block), "\n".join(asst_block), "",
+            upstream,
+            model,
+            200,
+            "\n".join(user_block),
+            "\n".join(asst_block),
+            "",
         )
         user_block, asst_block = [], []
         return entry
